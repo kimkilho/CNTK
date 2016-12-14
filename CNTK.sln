@@ -1889,6 +1889,7 @@ Global
 		{50EF9EE6-5018-453E-A063-F77044EF1A97}.Release_NoOpt|x64.Build.0 = Release_NoOpt|x64
 		{50EF9EE6-5018-453E-A063-F77044EF1A97}.Release|x64.ActiveCfg = Release|x64
 		{50EF9EE6-5018-453E-A063-F77044EF1A97}.Release|x64.Build.0 = Release|x64
+<<<<<<< HEAD
 		{4B442D34-641A-4B37-9A4B-D18DBE28A979}.Debug_CpuOnly|x64.ActiveCfg = Debug_CpuOnly|x64
 		{4B442D34-641A-4B37-9A4B-D18DBE28A979}.Debug_CpuOnly|x64.Build.0 = Debug_CpuOnly|x64
 		{4B442D34-641A-4B37-9A4B-D18DBE28A979}.Debug|x64.ActiveCfg = Debug|x64
@@ -1909,6 +1910,8 @@ Global
 		{3500A847-E024-4E7D-92DD-CC587C17460B}.Release_NoOpt|x64.Build.0 = Release_NoOpt|x64
 		{3500A847-E024-4E7D-92DD-CC587C17460B}.Release|x64.ActiveCfg = Release|x64
 		{3500A847-E024-4E7D-92DD-CC587C17460B}.Release|x64.Build.0 = Release|x64
+=======
+>>>>>>> fix Release_NoOpt for the BinaryReader project and remove duplicate entries of this project
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

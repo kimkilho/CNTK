@@ -32,6 +32,7 @@ num_classes  = 10
 
 # Define the reader for both training and evaluation action.
 def create_reader(map_file, mean_file, train, total_data_size, distributed_after=INFINITE_SAMPLES):
+    
     if not os.path.exists(map_file) or not os.path.exists(mean_file):
         raise RuntimeError("File '%s' or '%s' does not exist. Please run install_cifar10.py from DataSets/CIFAR-10 to fetch them" %
                            (map_file, mean_file))
@@ -56,10 +57,45 @@ def create_reader(map_file, mean_file, train, total_data_size, distributed_after
         distributed_after = distributed_after)
 
 
+<<<<<<< HEAD
+<<<<<<< HEAD
 # Train and evaluate the network.
+<<<<<<< HEAD
+<<<<<<< HEAD
 def train_and_evaluate(create_train_reader, test_reader, network_name, max_epochs, create_dist_learner, scale_up=False):
+=======
+=======
+
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
+def train_and_test_cifar_resnet(train_data, test_data, mean, network_name, max_epochs, scale_up=False, block_samples=0, distributed_after=0, num_quantization_bits=32):
+
+    # create a distributed learner for SGD
+    # BlockMomentum SGD will be used in case number of samples per block is not 0 and 1BitSGD is disabled
+    if block_samples != 0:
+        if num_quantization_bits != 32:
+            raise ValueError("Blockmomentum disrtibuted learner is not meant to be used with 1BitSGD")
+        else:
+            create_dist_learner = lambda learner: distributed.block_momentum_distributed_learner(learner=learner, block_size=block_samples)
+    else:
+        # 1BitSGD will be used in case num_quantization_bits is 1
+        # distributed_after_samples denotes the number of samples after which distributed training will start 
+        create_dist_learner = lambda learner: distributed.data_parallel_distributed_learner(learner=learner, num_quantization_bits=num_quantization_bits, distributed_after=distributed_after)
+
+    # create training and testing readers with respective data  
+    reader_train_factory = lambda data_size: create_reader(train_data, mean, False, data_size) # apply transformation only for training set
+    test_reader = create_reader(test_data, mean, False, FULL_DATA_SWEEP)
+<<<<<<< HEAD
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
+=======
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
 
     set_computation_network_trace_level(0)
+=======
+def resnet_cifar10(reader_train_factory, test_reader, create_dist_learner, max_epochs):
+>>>>>>> restructured ResNet example with distributed training; ConvNet minor changes
+=======
+def resnet_cifar10(reader_train_factory, test_reader, create_dist_learner, max_epochs):
+>>>>>>> restructured ResNet example with distributed training; ConvNet minor changes
 
     # Input variables denoting the features and label data
     input_var = input_variable((num_channels, image_height, image_width))
@@ -86,7 +122,8 @@ def train_and_evaluate(create_train_reader, test_reader, network_name, max_epoch
     # ResNet110 samples-per-second is ~7x of single GPU, comparing to ~3x without scaling
     # up. However, bigger minimatch size on the same number of samples means less updates, 
     # thus leads to higher training error. This is a trade-off of speed and accuracy
-    minibatch_size = 128 * (distributed.Communicator.num_workers() if scale_up else 1)
+
+    minibatch_size = 128 * 2#(distributed.Communicator.num_workers() if scale_up else 1)
 
     momentum_time_constant = -minibatch_size/np.log(0.9)
     l2_reg_weight = 0.0001
@@ -140,7 +177,6 @@ def train_and_evaluate(create_train_reader, test_reader, network_name, max_epoch
     while True:
         data = test_reader.next_minibatch(minibatch_size, input_map=input_map)
         if not data: break;
-
         local_mb_samples=data[label_var].num_samples
         metric_numer += trainer.test_minibatch(data) * local_mb_samples
         metric_denom += local_mb_samples
@@ -152,13 +188,42 @@ def train_and_evaluate(create_train_reader, test_reader, network_name, max_epoch
 
     return metric_numer/metric_denom
 
+# Train and evaluate the network.
+def train_and_test_cifar_resnet(train_data, test_data, mean, network_name, max_epochs, scale_up=False, block_samples=0, distributed_after=0, num_quantization_bits=32):
+
+    # Create distributed trainer factory
+    print("Start training: quantize_bit = {}, epochs = {}, distributed_after = {}".format(num_quantization_bits, max_epochs, distributed_after))
+
+    # BlockMomentum SGD will be used in case number of samples per block is not 0 and 1BitSGD is disabled
+    if block_samples != 0:
+        if num_quantization_bits != 32:
+            raise ValueError("Blockmomentum disrtibuted learner is not meant to be used with 1BitSGD")
+        else:
+            create_dist_learner = lambda learner: distributed.block_momentum_distributed_learner(learner=learner, block_size=block_samples)
+    else:
+        # 1BitSGD will be used in case num_quantization_bits is 1
+        # distributed_after_samples denotes the number of samples after which distributed training will start 
+        create_dist_learner = lambda learner: distributed.data_parallel_distributed_learner(learner=learner, num_quantization_bits=num_quantization_bits, distributed_after=distributed_after)
+
+    # create training and testing readers with respective data  
+    reader_train_factory = lambda data_size: create_reader(train_data, mean, False, data_size) 
+    test_reader = create_reader(test_data, mean, False, FULL_DATA_SWEEP)
+
+    set_computation_network_trace_level(0)
+
+    return resnet_cifar10(reader_train_factory, test_reader, create_dist_learner, max_epochs=max_epochs)
+
+    
+
 if __name__=='__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-n', '--network', help='network type, resnet20 or resnet110', required=False, default='resnet20')
-    parser.add_argument('-e', '--epochs', help='total epochs', type=int, required=False, default='160')
+    parser.add_argument('-e', '--epochs', help='total epochs', type=int, required=False, default='100')
     parser.add_argument('-q', '--quantize_bit', help='quantized bit', type=int, required=False, default='32')
     parser.add_argument('-s', '--scale_up', help='scale up minibatch size with #workers for better parallelism', type=bool, required=False, default='False')
     parser.add_argument('-a', '--distributed_after', help='number of samples to train with before running distributed', type=int, required=False, default='0')
+    parser.add_argument('-b', '--block_size', type=int, help="block size for block momentum distributed learner", required=False, default=0)
 
     args = vars(parser.parse_args())
     num_quantization_bits = int(args['quantize_bit'])
@@ -166,20 +231,81 @@ if __name__=='__main__':
     distributed_after_samples = int(args['distributed_after'])
     network_name = args['network']
     scale_up = bool(args['scale_up'])
+    block_size = int(args['block_size'])
 
+<<<<<<< HEAD
+<<<<<<< HEAD
     # Create distributed trainer factory
     print("Start training: quantize_bit = {}, epochs = {}, distributed_after = {}".format(num_quantization_bits, epochs, distributed_after_samples))
-    create_dist_learner = lambda learner: distributed.data_parallel_distributed_learner(learner=learner,
-                                                                                        num_quantization_bits=num_quantization_bits,
-                                                                                        distributed_after=distributed_after_samples)
+   
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
+=======
+
+>>>>>>> fixed distributed ResNet example
+=======
+>>>>>>> enabled block momentum distributed learner for ResNet example
+=======
+
+>>>>>>> fixed distributed ResNet example
+=======
+>>>>>>> enabled block momentum distributed learner for ResNet example
+    if (block_size != 0):
+        create_dist_learner = lambda learner: distributed.block_momentum_distributed_learner(learner=learner, block_size=block_size)
+    else:
+        create_dist_learner = lambda learner: distributed.data_parallel_distributed_learner(learner=learner, num_quantization_bits=num_quantization_bits, distributed_after=distributed_after_samples)
+
+<<<<<<< HEAD
+=======
+>>>>>>> restructured ResNet example with distributed training; ConvNet minor changes
+=======
+>>>>>>> fixed distributed ResNet example
+=======
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
+=======
+>>>>>>> restructured ResNet example with distributed training; ConvNet minor changes
     train_data=os.path.join(data_path, 'train_map.txt')
     test_data=os.path.join(data_path, 'test_map.txt')
     mean=os.path.join(data_path, 'CIFAR-10_mean.xml')
 
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
+<<<<<<< HEAD
     create_train_reader=lambda data_size: create_reader(train_data, mean, True, data_size, distributed_after_samples)
     test_reader=create_reader(test_data, mean, False, FULL_DATA_SWEEP)
+    reader_train_factory = lambda data_size: create_reader(train_data, mean, True, data_size)
+    reader_test_factory = lambda data_size: create_reader(test_data, mean, True, data_size)
+=======
+    reader_train_factory = lambda data_size: create_reader(train_data, mean, True, data_size)
+    reader_test_factory = lambda data_size: create_reader(test_data, mean, True, data_size)
 
-    train_and_evaluate(create_train_reader, test_reader, network_name, epochs, create_dist_learner, scale_up)
+<<<<<<< HEAD
+>>>>>>> fixed distributed ResNet example
+
+=======
+>>>>>>> enabled block momentum distributed learner for ResNet example
+    train_and_evaluate(reader_train_factory, reader_test_factory, network_name, epochs, create_dist_learner, scale_up)
+=======
+
+=======
+>>>>>>> restructured ResNet example with distributed training; ConvNet minor changes
+    train_and_test_cifar_resnet(train_data, test_data, mean, network_name, epochs, scale_up, block_samples, distributed_after_samples, num_quantization_bits)
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
+=======
+
+    reader_train_factory = lambda data_size: create_reader(train_data, mean, True, data_size)
+    reader_test_factory = lambda data_size: create_reader(test_data, mean, True, data_size)
+
+    train_and_evaluate(reader_train_factory, reader_test_factory, network_name, epochs, create_dist_learner, scale_up)
+>>>>>>> fixed distributed ResNet example
+=======
+    train_and_test_cifar_resnet(train_data, test_data, mean, network_name, epochs, scale_up, block_samples, distributed_after_samples, num_quantization_bits)
+>>>>>>> added comments and minor changes to ResNet and ConvNet examples
 
     # Must call MPI finalize when process exit
     distributed.Communicator.finalize()
