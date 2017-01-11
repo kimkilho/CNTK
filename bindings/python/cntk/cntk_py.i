@@ -564,7 +564,6 @@ public:
     if (!PyDict_Check($input)) {
         SWIG_exception(SWIG_TypeError, "dictionary expected");
     }
-    // normal argout
 
     for (auto it: *$1)
     {
