@@ -17,7 +17,7 @@ namespace Microsoft { namespace MSR { namespace CNTK {
       m_currentChunkPosition(CHUNKID_MAX),
       m_globalSamplePosition(0),
       m_globalSequencePosition(0),
-      m_totalNumberOfSamples(0),
+      m_sweepSizeInSamples(0),
       m_currentSequencePositionInChunk(0),
       m_multithreadedGetNextSequences(multithreadedGetNextSequences),
       m_cleaner(maxNumberOfInvalidSequences)
@@ -41,7 +41,7 @@ namespace Microsoft { namespace MSR { namespace CNTK {
         RuntimeError("NoRandomizer: Expected input to contain samples, but the number of successfully read samples was 0.");
     }
 
-    m_totalNumberOfSamples = sampleCount;
+    m_sweepSizeInSamples = sampleCount;
 }
 
 ChunkIdType NoRandomizer::GetChunkIndexOf(size_t samplePosition)
@@ -55,7 +55,7 @@ void NoRandomizer::StartEpoch(const EpochConfiguration& config)
     m_config = config;
 
     if (m_config.m_totalEpochSizeInSamples == requestDataSize)
-        m_config.m_totalEpochSizeInSamples = m_totalNumberOfSamples;
+        m_config.m_totalEpochSizeInSamples = m_sweepSizeInSamples;
 
     SetCurrentSamplePosition(m_config.m_totalEpochSizeInSamples * config.m_epochIndex);
 }
@@ -141,18 +141,26 @@ Sequences NoRandomizer::GetNextSequences(size_t globalSampleCount, size_t localS
     if (m_globalSamplePosition >= endOfEpochPosition)
     {
         result.m_endOfEpoch = true;
+        result.m_endOfSweep = (m_globalSamplePosition >= m_sweepSizeInSamples) &&
+            (m_globalSamplePosition % m_sweepSizeInSamples == 0);
         return result;
     }
 
     // Check we do not go over epoch.
     globalSampleCount = std::min(globalSampleCount, endOfEpochPosition - m_globalSamplePosition);
 
-    // Check that we do not go over the sweep.
-    size_t sweepPosition = m_globalSamplePosition % m_totalNumberOfSamples;
-    globalSampleCount = std::min(globalSampleCount, m_totalNumberOfSamples - sweepPosition);
+    if (!m_config.m_allowMinibatchesToCrossSweepBoundaries)
+    {
+        // Cut down the required sample count if we're not allowed to go over the
+        // sweep boundary
+        size_t sweepPosition = m_globalSamplePosition % m_sweepSizeInSamples;
+        globalSampleCount = std::min(globalSampleCount, m_sweepSizeInSamples - sweepPosition);
+    }
 
     if (globalSampleCount == 0)
         LogicError("Global sample count must not result in zero.");
+
+    auto sweepIndex = m_globalSamplePosition / m_sweepSizeInSamples;
 
     m_sequenceBuffer.clear();
     GetNextSequenceDescriptions(globalSampleCount, localSampleCount, m_sequenceBuffer);
@@ -160,6 +168,8 @@ Sequences NoRandomizer::GetNextSequences(size_t globalSampleCount, size_t localS
     // m_globalSamplePosition is already shifted in GetNextSequenceDescriptions() by the current minibatch size.
     // Set the end-of-epoch flag (true when the current batch is last in an epoch).
     result.m_endOfEpoch = (m_globalSamplePosition >= endOfEpochPosition);
+    result.m_endOfSweep = sweepIndex != m_globalSamplePosition / m_sweepSizeInSamples;
+
     if (m_sequenceBuffer.size() == 0)
     {
         return result;
@@ -229,7 +239,7 @@ void NoRandomizer::SetCurrentSamplePosition(size_t samplePosition)
 {
     m_currentSequencePositionInChunk = 0;
     m_globalSamplePosition = samplePosition;
-    size_t sweepSamplePosition = m_globalSamplePosition % m_totalNumberOfSamples;
+    size_t sweepSamplePosition = m_globalSamplePosition % m_sweepSizeInSamples;
 
     ChunkIdType chunkIndex = GetChunkIndexOf(sweepSamplePosition);
     if (chunkIndex != m_currentChunkPosition)

@@ -62,7 +62,7 @@ namespace
             if (minibatchData.empty())
                 updated = trainer.TrainMinibatch({}, device);
             else
-                updated = trainer.TrainMinibatch({ { classifier.features, minibatchData[featureStreamInfo].m_data }, { classifier.labels, minibatchData[labelStreamInfo].m_data } }, device);
+                updated = trainer.TrainMinibatch({ { classifier.features, minibatchData[featureStreamInfo].data }, { classifier.labels, minibatchData[labelStreamInfo].data } }, device);
 
             size_t checkpointIndex = trainer.TotalNumberOfSamplesSeen() / checkpointFrequency;
             if (checkpointIndex > currentCheckpointIndex)

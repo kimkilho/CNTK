@@ -429,9 +429,7 @@ def sanitize_var_map(op_arguments, arguments, precision=None,
                             'sequence begin markers' % (sample_sizes, len(seq_starts)))
 
 
-        if isinstance(batch, MinibatchData):
-            batch = batch.m_data
-        elif not isinstance(batch, cntk_py.Value):
+        if not (isinstance(batch, MinibatchData) or isinstance(batch, cntk_py.Value)):
             batch = sanitize_batch(var, batch, seq_starts, device)
 
         var_map[var] = batch
