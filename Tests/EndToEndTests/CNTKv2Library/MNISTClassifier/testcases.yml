@@ -5,18 +5,7 @@ tags:
     - nightly-e ((build_sku == '1bitsgd') or (build_sku == 'cpu')) and ((device=='gpu') or (flavor== 'release'))
 
 testCases:
-  Test cases pass:
+  Test run must be completed:
     patterns:
-      - "Test case"
-      - "has passed with"
-
-  Test suites pass:
-    patterns:
-      - "Test suite"
-      - "has passed with"
-
-  Test module passed:
-    patterns:
-      - "Test module"
-      - "has passed with"
+      - "CNTKv2Library-MNISTClassifier tests: Passed"
 
