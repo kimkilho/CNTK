@@ -3,8 +3,8 @@
 # For running from Visual Studio add
 # currentDirectory=$(SolutionDir)/<path to corresponding data folder> 
 
-command = trainNetwork:testNetwork:writeResults
-#command = writeResults
+#command = trainNetwork:testNetwork:writeResults
+command = trainNetwork:testNetwork
 
 precision = "float"; traceLevel = 1 ; deviceId = "auto"
 
@@ -12,7 +12,8 @@ rootDir = ".." ; dataDir = "$rootDir$/DataSets/MNIST" ;
 outputDir = "./Output" ;
 
 modelPath = "$outputDir$/Models/07_Deconvolution.model"
-#stderr = "$outputDir$/07_Deconvolution_bs_out"
+#stderr = "$outputDir$/07_Deconvolution_bs_out.txt"
+makemode=false
 
 # TRAINING CONFIG
 trainNetwork = {
@@ -24,10 +25,9 @@ trainNetwork = {
             c1      = ConvolutionalLayer {cMap, (5:5), pad = true}(inputFeatures)
             r1      = ReLU(c1)
             p1      = MaxPoolingLayer {(4:4), stride=(4:4)}(r1)
-            unpool1 = MaxUnpooling(p1, r1, (4:4:1), stride=(4:4:1), autoPadding=(false:false:false), lowerPad=0, upperPad=0)
-            W       = ParameterTensor{(1:5:5:cMap), init="uniform", initValueScale=0.1, initOnCPUOnly=true}
-            deconv  = Convolution(W, unpool1, (5:5:1), mapDims=cMap, stride=(1:1), sharing=(true:true:true), autoPadding=(false:false:false), lowerPad=(2:2:0), upperPad=(2:2:0), deconv=true)
-        }.deconv
+            unpool1 = MaxUnpoolingLayer {(4:4), stride=(4:4)}(p1, r1)
+            deconv1 = DeconvLayer {1, (5:5), cMap, lowerPad=(2:2:0), upperPad=(2:2:0)}(unpool1)
+        }.deconv1
 
         # inputs
         imageShape = 28:28:1                        # image dimensions, 1 channel only
@@ -102,7 +102,7 @@ testNetwork = {
 writeResults = {
     action = "write"
     minibatchSize = 1
-    outputPath = "$outputDir$/output.txt"
+    outputPath = "$outputDir$/decoder_output_bs.txt"
     
     reader = {
         randomize = False
