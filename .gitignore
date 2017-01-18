@@ -263,3 +263,10 @@ Tutorials/slots.wl
 /packages
 /CNTK.VC.db
 /CNTK.VC.VC.opendb
+
+# .so files
+*.so
+
+# Kilho's personal files
+KILHO_REMINDER.md
+bindings/python/swig-3.0.10/
