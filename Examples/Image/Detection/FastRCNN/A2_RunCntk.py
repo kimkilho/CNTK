@@ -9,7 +9,7 @@ locals().update(importlib.import_module("PARAMETERS").__dict__)
 ####################################
 # Parameters
 ####################################
-cntkCmdStrPattern = "cntk.exe configFile={0}fastrcnn.cntk currentDirectory={0} {1}"
+cntkCmdStrPattern = "cntk configFile={0}fastrcnn.cntk currentDirectory={0} {1}"
 
 # cntk arguments
 NumLabels = nrClasses
@@ -38,7 +38,7 @@ tstart = datetime.datetime.now()
 os.environ['ACML_FMA'] = str(0)
 cmdStr = cntkCmdStrPattern.format(cntkFilesDir, cntk_args)
 print (cmdStr)
-pid = subprocess.Popen(cmdStr, cwd = cntkFilesDir)
+pid = subprocess.Popen(cmdStr, cwd = cntkFilesDir, shell=True)
 pid.wait()
 print ("Time running cntk [s]: " + str((datetime.datetime.now() - tstart).total_seconds()))
 

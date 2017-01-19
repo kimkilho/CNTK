@@ -13,7 +13,7 @@ from __future__ import print_function
 import os, sys, cv2, numpy as np, pickle as cp, heapq
 from .nms import nms as nmsPython
 if sys.version_info[0] < 3: 
-    from utils2_win64.cython_nms import nms
+    from utils.gpu_nms import gpu_nms as nms
 else: 
     from .utils3_win64.cython_nms import nms
 from .timer import Timer
