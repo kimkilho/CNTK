@@ -49,14 +49,8 @@ def combine(operands, name=''):
         :class:`~cntk.ops.functions.Function`
     '''
     from cntk.cntk_py import combine
-    converted_operands = list()
-    for o in operands:
-        if isinstance(o, Function):
-            converted_operands.append(o.output)
-        else:
-            converted_operands.append(o)
+    return combine(operands, name)
 
-    return combine(converted_operands, name)
 
 @typemap
 def as_block(composite, block_arguments_map, block_op_name, block_instance_name=''):
@@ -83,6 +77,23 @@ def as_block(composite, block_arguments_map, block_op_name, block_instance_name=
     '''
     from cntk.cntk_py import as_block
     return as_block(composite, block_arguments_map, block_op_name, block_instance_name)
+
+@typemap
+def as_composite(root_function, name=''):
+    '''
+     Creates a composite Function that has the specified root_function as its root.
+     The composite denotes a higher-level Function encapsulating the entire graph
+     of Functions underlying the specified rootFunction.
+
+    Args:
+        root_function: Root Function, the graph underlying which, the newly created composite encapsulates
+        name (str, optional): the name of the Alias Function in the network
+
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+    from cntk.cntk_py import as_composite
+    return as_composite(root_function, name)
 
 @typemap
 def alias(x, name=''):
@@ -392,6 +403,51 @@ def classification_error(output_vector, target_vector, axis=-1, topN=1, name='')
     target_vector = sanitize_input(target_vector, dtype)
     axis = sanitize_axis(axis)
     return classification_error(output_vector, target_vector, topN, axis, name)
+
+@typemap
+def edit_distance_error(input_a, input_b, subPen=0, delPen=0, insPen=0, squashInputs=False, samplesToIgnore=[], name=''):
+    '''
+    Edit distance error evaluation node with the option of specifying penalty of substitution, deletion and insertion, as well as squashing the input sequences and ignoring certain samples.
+    Using the classic DP algorithm as described in https://en.wikipedia.org/wiki/Edit_distance, adjusted to take into account the penalties.
+
+    Each sequence in the inputs is expected to be a matrix. Prior to computation of the edit distance, the operation extracts the indices of maximum element in each column.
+    For example, a sequence matrix
+    1 2 9 1
+    3 0 3 2
+    will be represented as the vector of labels (indices) as [1, 0, 0, 1], on which edit distance will be actually evaluated.
+
+    The node allows to squash sequences of repeating labels and ignore certain labels. For example, if squashInputs is true and samplesToIgnore contains label '-' then
+    given first input sequence as s1="1-12-" and second as s2="-11--122" the edit distance will be computed against s1' = "112" and s2' = "112".
+
+    The returned error is computed as: EditDistance(s1,s2) * length(s1') / length(s1)
+
+    Just like ClassificationError and other evaluation nodes, when used as an evaluation criterion, the SGD process will aggregate all values over an epoch and report the average, i.e. the error rate.
+    Primary objective of this node is for error evaluation of CTC training, see formula (1) in "Connectionist Temporal Classification: Labelling Unsegmented
+    Sequence Data with Recurrent Neural Networks", http://machinelearning.wustl.edu/mlpapers/paper_files/icml2006_GravesFGS06.pdf
+
+    Example:
+        i1 = cntk.input_variable(shape=(2,))
+        i2 = cntk.input_variable(shape=(2,))
+        arguments = {i1 : [[1, 3], [2, 0]], i2 : [[2, 0], [2, 0]]}
+        a = edit_distance_error(i1, i2, 0, 1, 1, True, [1])
+        print(a.eval(arguments))
+
+    Args:
+        input_a: first input sequence
+        input_b: second input sequence
+        subPen, delPen, insPen: substitution, deletion and insertion penalties
+        squashInputs: whether to merge sequences of identical samples (in both input sequences). If true and samplesToIgnore contains label '-' then
+                given first input sequence as s1="a-ab-" and second as s2="-aa--abb" the edit distance will be computed against s1' = "aab" and s2' = "aab".
+        samplesToIgnore: list of samples to ignore during edit distance evaluation (in both sequences)
+        name (str, optional): the name of the Function instance in the network
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+    from cntk.cntk_py import edit_distance_error
+    dtype = get_data_type(input_a, input_b)
+    input_a = sanitize_input(input_a, dtype)
+    input_b = sanitize_input(input_b, dtype)
+    return edit_distance_error(input_a, input_b, subPen, delPen, insPen, squashInputs, samplesToIgnore, name)
 
 ##########################################################################
 # convolution ops
@@ -1722,7 +1778,7 @@ def reshape(x, shape, begin_axis=None, end_axis=None, name=''):
 
     The output tensor has the shape specified by 'shape'.
 
-    Examples:
+    Example:
         >>> i1 = C.input_variable(shape=(3,2))
         >>> C.reshape(i1, (2,3)).eval({i1:np.asarray([[[[0., 1.],[2., 3.],[4., 5.]]]], dtype=np.float32)})
         array([[[[ 0.,  1.,  2.],
@@ -1773,7 +1829,7 @@ def transpose(x, axis1=0, axis2=1, name=''):
     Swaps two axes of the tensor. The output tensor has the same data but with
     ``axis1`` and ``axis2`` swapped.
 
-    Examples:
+    Example:
         >>> C.transpose([[[0,1],[2,3],[4,5]]], 1, 2).eval()
         array([[[ 0.,  2.,  4.],
                 [ 1.,  3.,  5.]]], dtype=float32)
@@ -1798,7 +1854,7 @@ def slice(x, axis, begin_index, end_index, name=''):
     '''
     Slice the input along an axis.
 
-    Examples:
+    Example:
         >>> # Slice using input variable
         >>> # create 2x3 matrix
         >>> x1 = C.input_variable((2,3))
@@ -1824,8 +1880,8 @@ def slice(x, axis, begin_index, end_index, name=''):
 
     NumPy's way of slicing works, too:
 
-    Examples:
-        TODO: Make following lines work. Uncomment when done
+    Example:
+        #TODO: Make following lines work. Uncomment when done
         #>>> x1[1].eval()
         #array([[ 4.,  5.,  6.]], dtype=float32)
         #>>> x1[:,:2,:].eval()
@@ -1859,7 +1915,7 @@ def splice(inputs, axis=-1, name=''):
     '''
     Concatenate the input tensors along an axis.
 
-    Examples:
+    Example:
         >>> # create 2x2 matrix in a sequence of length 1 in a batch of one sample
         >>> data1 = np.asarray([[[1, 2],
         ...                      [4, 5]]], dtype=np.float32)
@@ -1908,7 +1964,7 @@ def reduce_sum(x, axis=None, name=''):
     is not specified then the sum will be computed over all axes, that is, the output is a scalar,
     which is the sum of tensor's elements.
 
-    Examples:
+    Example:
         >>> # create 3x2 matrix in a sequence of length 1 in a batch of one sample
         >>> data = [[10, 20],[30, 40],[50, 60]]
 
@@ -1957,7 +2013,7 @@ def reduce_log_sum(x, axis=None, name=''):
     Computes the log of the sum of the exponentiations of the input tensor's
     elements across the specified axis.
 
-    Examples:
+    Example:
         >>> x = C.input_variable(shape=(3,2))
         >>> val = np.reshape(np.arange(6.0, dtype=np.float32), (3,2))
         >>> lse = C.reduce_log_sum(x)
@@ -1985,7 +2041,7 @@ def reduce_mean(x, axis=None, name=''):
     '''
     Computes the mean of the input tensor's elements across the specified axis.
 
-    Examples:
+    Example:
         >>> # create 3x2 matrix in a sequence of length 1 in a batch of one sample
         >>> data = [[5, 20],[30, 40],[55, 60]]
 
@@ -2016,7 +2072,7 @@ def reduce_max(x, axis=None, name=''):
     '''
     Computes the max of the input tensor's elements across the specified axis.
 
-    Examples:
+    Example:
         >>> # create 3x2 matrix in a sequence of length 1 in a batch of one sample
         >>> data = [[10, 20],[30, 40],[50, 60]]
 
@@ -2047,7 +2103,7 @@ def reduce_min(x, axis=None, name=''):
     '''
     Computes the min of the input tensor's elements across the specified axis.
 
-    Examples:
+    Example:
         >>> # create 3x2 matrix in a sequence of length 1 in a batch of one sample
         >>> data = [[10, 20],[30, 40],[50, 60]]
 
@@ -2133,7 +2189,7 @@ def random_sample_inclusion_frequency(
         allow_duplicates (bool): If sampling is done
          with replacement (`True`) or without (`False`).
 
-    Examples:
+    Example:
         >>> import numpy as np
         >>> from cntk import *
         >>> # weight vector with 100 '1000'-values followed
@@ -2179,7 +2235,7 @@ def dropout(x, dropout_rate=0.0, name=''):
     In CNTK's implementation, because the values that are not set to 0 are multiplied
     with (1 / (1 - ``dropout_rate``)), this is not necessary.
 
-    Examples:
+    Example:
         >>> data = [[10, 20],[30, 40],[50, 60]]
         >>> C.dropout(data, 0.5).eval() # doctest: +SKIP
         array([[  0.,  40.],
@@ -2253,6 +2309,35 @@ def input_variable(shape, dtype=np.float32, needs_gradient=False, is_sparse=Fals
 
 
 @typemap
+def output_variable(shape, dtype, dynamic_axes, name=''):
+    '''
+    It creates an output node that is used to define a user defined function.
+
+    Args:
+        shape (tuple or int): the shape of the input tensor
+        dtype (type): np.float32 or np.float64
+        dynamic_axes (list or tuple): a list of dynamic axis (e.g., batch axis, time axis)
+        name (str, optional): the name of the Function instance in the network
+
+    Returns:
+        :class:`~cntk.ops.variables.Variable` that is of output type
+    '''
+    from cntk.cntk_py import output_variable
+    from ..utils import sanitize_shape, sanitize_dtype_cntk
+
+    shape = sanitize_shape(shape)
+
+    dtype = sanitize_dtype_cntk(dtype)
+
+    for a in dynamic_axes:
+        if not a.is_dynamic_axis:
+            raise ValueError('axis in dynamic_axes attribute is not dynamic')
+    dynamic_axes = list(reversed(dynamic_axes))
+
+    return output_variable(shape, dtype, dynamic_axes, name)
+
+
+@typemap
 def placeholder_variable(shape=None, dynamic_axes=None, name=''):
     '''
     It creates a variable place holder for recurrence networks, when the network's dynamic axes
@@ -2284,7 +2369,7 @@ def parameter(shape=None, init=None, dtype=None, device=None, name=''):
     '''
     It creates a parameter tensor.
 
-    Examples:
+    Example:
         >>> init_parameter = C.parameter(shape=(3,4), init=2)
         >>> np.asarray(init_parameter) # doctest: +SKIP
         array([[ 2.,  2.,  2.,  2.],
@@ -2328,7 +2413,7 @@ def constant(value=None, shape=None, device=None, name=''):
     '''
     It creates a constant tensor initialized from a numpy array
 
-    Examples
+    Example:
         >>> constant_data = C.constant([[1., 2.], [3., 4.], [5., 6.]])
         >>> constant_data.value
         array([[ 1.,  2.],

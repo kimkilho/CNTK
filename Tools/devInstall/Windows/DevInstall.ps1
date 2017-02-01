@@ -4,27 +4,44 @@
 #
 <#
   .SYNOPSIS
- Use this cmdlet to install a CNTK development environment on your machine
-
+ Use this cmdlet to install a CNTK development environment on your machine.
+ A detailed description can be found here: https://github.com/Microsoft/CNTK/wiki/Setup-CNTK-with-script-on-Windows
+ 
  .DESCRIPTION
  The script will download and install the files necessary to create a CNTK development environment on your system. 
 
  It will analyse your machine and will determine which components are required. 
- The required components will be downloaded in [c:\installCacheCntk]
+ The required components will be downloaded into [c:\installCacheCntk] and installed from that location.
  Repeated operation of this script will reuse already downloaded components.
-
+ 
+ Before you can run this machine you should have read the instructions at 
+     https://github.com/Microsoft/CNTK/wiki/Setup-CNTK-with-script-on-Windows
+ 
  .PARAMETER Execute
- This is an optional parameter. Without setting this switch, no changes to the machine setup/installation will be performed
-
-  .PARAMETER NoGpu
- This is an optional parameter. By setting this switch the GPU specific tools (Cuda, CuDnn, Cub) will not be installed.
-
+ You need to supply this optional parameter to have the install script perform any changes to your machine. 
+ Without this parameter NO CHANGES will be done to your machine.
+ 
  .PARAMETER localCache
  This optional parameter can be used to specify the directory downloaded components will be stored in
 
  .PARAMETER AnacondaBasePath
- This is an optional parameter and can be used to specify an already installed Anaconda3 installation.
+ This optional parameter allows you to specify the location of an Anaconda installation to be used or created on your 
+ machine. If the directory exists on your machine, the script will continue under the assumption that this is a working 
+ Anaconda 3 (4.1.1) (or compatible) installation, and will create the CNTK Python environment in that location.
  By default a version of Anaconda3 will be installed into [C:\local\Anaconda3-4.1.1-Windows-x86_64]
+
+  .PARAMETER PyVersion
+ This is an optional parameter and can be used to specify the Python version used in the CNTK Python environment.
+ Supported values for this parameter are 27, 34, or 35. The default values is 35 (for a CNTK Python 35 environment).
+
+  .PARAMETER PyEnvironmentName
+ This optional parameter allows to specify the name of the environment that will be created during the installation process.
+ By default the environment will be named cntkdev-py<PyVersion>, where PyVersion is being replaced by the content of the <PyVersion>
+ parameter to this script. If this parameter is specified by you, no version substitution in the environment will be performed. 
+
+  .PARAMETER NoPythonEnvironment
+ If this switch parameter is set, the install script will not create a CNTK Python environment during the installation process.
+ This allows creation of the desired environment after the installation.
 
  .EXAMPLE
  .\devInstall.ps1
@@ -48,9 +65,18 @@ Param(
     [parameter(Mandatory=$false)] [switch] $Execute,
     [parameter(Mandatory=$false)] [string] $localCache = "c:\installCacheCntk",
     [parameter(Mandatory=$false)] [string] $InstallLocation = "c:\local",
-    [parameter(Mandatory=$false)] [string] $AnacondaBasePath = "C:\local\Anaconda3-4.1.1-Windows-x86_64")
+    [parameter(Mandatory=$false)] [string] $AnacondaBasePath = "C:\local\Anaconda3-4.1.1-Windows-x86_64",
+    [parameter(Mandatory=$false, ParameterSetName = "PythonVersion")] [ValidateSet("27", "34", "35")] [string] $PyVersion = "35",
+    [parameter(Mandatory=$false, ParameterSetName = "PythonVersion")] [string] $PyEnvironmentName = "",
+    [parameter(Mandatory=$true, ParameterSetName = "PythonNoEnvironment")] [switch] $NoPythonEnvironment)
     
 $roboCopyCmd = "robocopy.exe"
+
+#just make sure the supplied parameter don't end on a backslash
+$localCache = (Join-Path $localCache .) | Split-Path
+$InstallLocation = (Join-Path $InstallLocation .) | Split-Path
+$AnacondaBasePath = (Join-Path $AnacondaBasePath .) | Split-Path
+
 $localDir = $InstallLocation
 
 
@@ -117,7 +143,9 @@ Function main
         $operation += OpZlibVS15Prebuild -cache $localCache -targetFolder $localDir
         $operation += OpOpenCV31 -cache $localCache -targetFolder $localDir
         $operation += OpAnaconda3411 -cache $localCache -AnacondaBasePath $AnacondaBasePath
-        $operation += OpAnacondaEnv34 -AnacondaBasePath $AnacondaBasePath -repoDir $repositoryRootDir -repoName $reponame
+        if (-not $NoPythonEnvironment) {
+            $operation += OpAnacondaEnv -AnacondaBasePath $AnacondaBasePath -repoDir $repositoryRootDir -repoName $reponame -environmentName $PyEnvironmentName -pyVersion $PyVersion
+        }
 
         $operationList = @()
         $operationList += (VerifyOperations $operation)
@@ -126,7 +154,7 @@ Function main
 
         if (DisplayAfterVerify $operationList) {
 
-            DownloadOperations $operationList 
+            DownloadOperations $operationList
 
             ActionOperations $operationList 
 
@@ -141,7 +169,6 @@ Function main
 }
 
 main
-
 exit 0
 
-# vim:set expandtab shiftwidth=2 tabstop=2:
+# vim:set expandtab shiftwidth=4 tabstop=4:
