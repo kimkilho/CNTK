@@ -11,7 +11,7 @@ from cntk.graph import find_by_name, plot
 from cntk.initializer import glorot_uniform
 from cntk.io import MinibatchSource, ImageDeserializer, CTFDeserializer
 from cntk.learner import momentum_sgd, learning_rate_schedule, momentum_as_time_constant_schedule
-from cntk.ops import input_variable, parameter, cross_entropy_with_softmax, classification_error, times, combine
+from cntk.ops import input, parameter, cross_entropy_with_softmax, classification_error, times, combine
 from cntk.ops import roipooling
 from cntk.ops.functions import CloneMethod
 from cntk.utils import log_number_of_parameters, ProgressPrinter
@@ -133,9 +133,9 @@ def train_fast_rcnn(debug_output=False):
                                         num_classes, num_rois, base_path, "train")
 
     # Input variables denoting features, rois and label data
-    image_input = input_variable((num_channels, image_height, image_width))
-    roi_input   = input_variable((num_rois, 4))
-    label_input = input_variable((num_rois, num_classes))
+    image_input = input((num_channels, image_height, image_width))
+    roi_input   = input((num_rois, 4))
+    label_input = input((num_rois, num_classes))
 
     # define mapping from reader streams to network inputs
     input_map = {
@@ -159,21 +159,20 @@ def train_fast_rcnn(debug_output=False):
 
     # Instantiate the trainer object
     learner = momentum_sgd(frcn_output.parameters, lr_schedule, mm_schedule, l2_regularization_weight=l2_reg_weight)
-    trainer = Trainer(frcn_output, (ce, pe), learner)
+    progress_printer = ProgressPrinter(tag='Training', num_epochs=max_epochs)
+    trainer = Trainer(frcn_output, (ce, pe), learner, progress_printer)
 
     # Get minibatches of images and perform model training
     print("Training Fast R-CNN model for %s epochs." % max_epochs)
     log_number_of_parameters(frcn_output)
-    progress_printer = ProgressPrinter(tag='Training', num_epochs=max_epochs)
     for epoch in range(max_epochs):       # loop over epochs
         sample_count = 0
         while sample_count < epoch_size:  # loop over minibatches in the epoch
             data = minibatch_source.next_minibatch(min(mb_size, epoch_size-sample_count), input_map=input_map)
             trainer.train_minibatch(data)                                    # update model with it
             sample_count += trainer.previous_minibatch_sample_count          # count samples processed so far
-            progress_printer.update_with_trainer(trainer, with_metric=True)  # log progress
 
-        progress_printer.epoch_summary(with_metric=True)
+        trainer.summarize_training_progress()
         if debug_output:
             frcn_output.save(os.path.join(abs_path, "Output", "frcn_py_%s.model" % (epoch+1)))
 

@@ -9,10 +9,11 @@ import scipy.sparse as sparse
 csr = sparse.csr_matrix
 import pytest
 
-from cntk.device import default
 from cntk.tests.test_utils import precision, PRECISION_TO_TYPE
 from cntk.ops import *
 from cntk.utils import *
+from cntk.internal import *
+from cntk import Value
 
 AA = np.asarray
 
@@ -51,7 +52,7 @@ def test_axes():
 def test_get_data_type():
     pa32 = parameter(init=np.asarray(2, dtype=np.float32))
     pa64 = parameter(init=np.asarray(2, dtype=np.float64))
-    pl = placeholder_variable(shape=(2))
+    pl = placeholder(shape=(2))
     c = constant(value=3.0)
     n32 = AA(1, dtype=np.float32)
     n64 = AA(1, dtype=np.float64)
@@ -73,7 +74,7 @@ def test_sanitize_batch_sparse():
     batch = [csr([[1,0,2],[2,3,0]]),
              csr([5,0,1])]
 
-    var = input_variable(3, is_sparse=True)
+    var = sequence.input(3, is_sparse=True)
     b = sanitize_batch(var, batch)
     # 2 sequences, with max seq len of 2 and dimension 3
     assert b.shape == (2,2,3)
@@ -91,13 +92,13 @@ def test_sanitize_batch_sparse():
        [True, False],
        [[2, 1, 1], [1, 0, 0]]),
 
-    (one_hot([[3, 4, 5, 1], [60, 61]], num_classes=62),
+    (Value.one_hot([[3, 4, 5, 1], [60, 61]], num_classes=62),
         [True, False],
         ValueError),
 ])
 def test_mask(batch, seq_starts, expected):
     shape = ()
-    var = input_variable(shape)
+    var = sequence.input(shape)
     if type(expected) == type(ValueError):
         with pytest.raises(expected):
             s = sanitize_batch(var, batch, seq_starts)
@@ -107,14 +108,14 @@ def test_mask(batch, seq_starts, expected):
 
 def test_one_hot():
     with pytest.raises(ValueError):
-        s = one_hot([[1.0, 2.0], [3.]], 4)
+        s = Value.one_hot([[1.0, 2.0], [3.]], 4)
     with pytest.raises(ValueError):
-        s = one_hot([1, 2], 4)
+        s = Value.one_hot([1, 2], 4)
 
 def test_sanitize_batch_contiguity():
     a1 = AA([[1,2],[3,4]])
     a2 = AA([[5,6],[7,8]])
-    var = input_variable((2,2), is_sparse=True)
+    var = sequence.input((2,2), is_sparse=True)
 
     batch = [a1.T,a2.T]
     with pytest.warns(RuntimeWarning):

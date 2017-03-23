@@ -400,6 +400,14 @@ void GPUSparseMatrix<ElemType>::ChangeDeviceTo(DEVICEID_TYPE to_id)
     {
         ElemType* d_dst = reinterpret_cast<ElemType*>(TracingGPUMemoryAllocator::Allocate<char>(to_id, BufferSizeAllocated()));
 
+#ifdef WIN32
+        // IOMMU DMAR needs to be disabled for CUDA P2P, otherwise it will silently hang.
+        // Unfortunately, cudaDeviceCanAccessPeer returns true irrespective of the IOMMU settings.
+        // More details: https://bugzilla.kernel.org/show_bug.cgi?id=188271
+        // http://docs.nvidia.com/cuda/gpudirect-rdma/#supported-systems
+        // TODO: enable UVA p2p access once this is fixed.
+
+
         // first try peer access
         int canAccessPeer = false;
         CUDA_CALL(cudaDeviceCanAccessPeer(&canAccessPeer, to_id, GetComputeDeviceId()));
@@ -413,6 +421,7 @@ void GPUSparseMatrix<ElemType>::ChangeDeviceTo(DEVICEID_TYPE to_id)
             CUDA_CALL(cudaMemcpyPeer(d_dst, to_id, Buffer(), GetComputeDeviceId(), BufferSizeAllocated()));
         }
         else
+#endif
         {
             // peer access didn't work, just copy normal
             // make this more efficient by keeping some buffers available for each copy
@@ -535,13 +544,12 @@ GPUSPARSE_INDEX_TYPE* GPUSparseMatrix<ElemType>::GetCondensedVector() const
 }
 
 template <class ElemType>
-void GPUSparseMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val)
+void GPUSparseMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry)
 {
     VerifyWritable(__FUNCTION__);
 
-    size_t n = GetNumCols();
-    if (n != columnsMask.GetNumCols())
-        RuntimeError("Matrix and column mask must have equal number of columns");
+    if (GetNumCols() != (columnsMask.GetNumCols() * numColsPerMaskEntry))
+        RuntimeError("Matrix number of columns must equal 'number of columns in column mask * numColsPerMaskEntry'.");
 
     if (val != 0)
         LogicError("MaskColumnsValue is not implmented for a non-zero mask for sparse matrices.");
@@ -558,10 +566,12 @@ void GPUSparseMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsM
         GPUSPARSE_INDEX_TYPE* colVector = GetCondensedVector();
 
         // Verify that if the column is to be masked, there are no elements in it.
+        size_t n = columnsMask.GetNumCols();
         #pragma omp parallel for
         for (long j = 0; j < n; j++)
-            if (maskedCols[j] == 0 && colVector[j + 1] != colVector[j])
-                RuntimeError("GPUSparseMatrix attempted to mask column %d, but it has %d elements in it.", (int)j, (int)(colVector[j + 1] - colVector[j]));
+            for (long k = 0; k < numColsPerMaskEntry; ++k)
+                if (maskedCols[j] == 0 && colVector[(j * numColsPerMaskEntry) + k + 1] != colVector[(j * numColsPerMaskEntry) + k])
+                    RuntimeError("GPUSparseMatrix attempted to mask column %d, but it has %d elements in it.", (int)((j * numColsPerMaskEntry) + k), (int)(colVector[(j * numColsPerMaskEntry) + k + 1] - colVector[(j * numColsPerMaskEntry) + k]));
     }
     else
         NOT_IMPLEMENTED;
@@ -724,7 +734,7 @@ void GPUSparseMatrix<ElemType>::RequireSizeAndAllocate(const size_t numRows, con
 template <class ElemType>
 void GPUSparseMatrix<ElemType>::RequireSizeAndAllocate(const size_t numRows, const size_t numCols, const size_t numNZElemToReserve, const MatrixFormat matrixFormat, const bool growOnly /*= true*/, bool keepExistingValues /*= true*/)
 {
-    RequireSize(numRows, numCols, matrixFormat, growOnly);
+    RequireSize(numRows, numCols, numNZElemToReserve, matrixFormat, growOnly);
     
     size_t bufferSizeNeeded = BufferSizeNeeded(numRows, numCols, numNZElemToReserve, matrixFormat);
     bool reallocate = (BufferSizeAllocated() < bufferSizeNeeded || (!growOnly && BufferSizeAllocated() > bufferSizeNeeded));
@@ -741,10 +751,10 @@ void GPUSparseMatrix<ElemType>::RequireSize(const size_t numRows, const size_t n
 }
 
 template <class ElemType>
-void GPUSparseMatrix<ElemType>::RequireSize(const size_t numRows, const size_t numCols, const MatrixFormat matrixFormat, const bool growOnly /*= true*/)
+void GPUSparseMatrix<ElemType>::RequireSize(const size_t numRows, const size_t numCols, const size_t numNZElemToReserve, const MatrixFormat matrixFormat, const bool growOnly /*= true*/)
 {
     if (GetFormat() != matrixFormat || GetNumRows() != numRows || GetNumCols() != numCols)
-        Resize(numRows, numCols, 0, matrixFormat, growOnly);
+        Resize(numRows, numCols, numNZElemToReserve, matrixFormat, growOnly);
 }
 
 template <class ElemType>
@@ -1670,6 +1680,32 @@ ElemType GPUSparseMatrix<ElemType>::RmsProp(GPUMatrix<ElemType>& c,
         CUBLAS_CALL(cublasDasum(cuHandle, (CUDA_LONG)n, reinterpret_cast<double*>(multipliers), 1, &aveMultiplier));
         return (ElemType)aveMultiplier / n;
     }
+}
+
+template <class ElemType>
+void GPUSparseMatrix<ElemType>::AdaDelta(GPUMatrix<ElemType>&c, GPUMatrix<ElemType>&functionValues, ElemType rho, ElemType epsilon)
+{
+    if (GetFormat() != MatrixFormat::matrixFormatSparseBlockCol)
+    {
+        NOT_IMPLEMENTED;
+    }
+
+    size_t numColsNeeded = 2 * GetNumCols();
+
+    if (c.IsEmpty() || (c.GetNumCols() < numColsNeeded))
+    {
+        c.RequireSize(GetNumRows(), numColsNeeded);
+        c.SetValue(0.0);
+    }
+
+    assert((c.GetNumRows() == GetNumRows()) && (c.GetNumCols() == numColsNeeded));
+
+    size_t n = GetNumElements();
+    int blocksPerGrid = (n + GridDim::maxThreadsPerBlock - 1) / GridDim::maxThreadsPerBlock;
+    _adadelta4BlockSparseCol<ElemType> << <blocksPerGrid, GridDim::maxThreadsPerBlock >> >(
+        n, Data(), ColOrRow2BlockId(), GetNumRows(),
+        c.Data(), c.Data() + n, functionValues.Data(),
+        rho, epsilon);
 }
 
 // sparse X dense = dense

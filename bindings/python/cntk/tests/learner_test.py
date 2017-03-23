@@ -6,8 +6,8 @@
 
 from __future__ import division
 import numpy as np
-from ..learner import *
-from .. import parameter, input_variable
+from ..learners import *
+from .. import parameter, input
 
 import pytest
 
@@ -53,9 +53,7 @@ def test_momentum_schedule_per_sample(params, expectation):
     assert [l[i] for i in range(len(expectation))] == expectation
 
 def test_learner_init():
-    i = input_variable(shape=(1,),
-                       needs_gradient=True,
-                       name='a')
+    i = input(shape=(1,), needs_gradient=True, name='a')
     w = parameter(shape=(1,))
 
     res = i * w
@@ -97,18 +95,18 @@ def test_learner_init():
     assert unit_gain_value
 
     lr_per_sample = learning_rate_schedule([(3,0.1), (2, 0.2), (1, 0.3)], UnitType.sample)
-    adam_sgd(res.parameters, lr=lr_per_sample, momentum=momentum_time_constant)
-    adam_sgd(res.parameters, lr_per_sample, momentum_time_constant, unit_gain_value)
-    adam_sgd(res.parameters, lr=lr_per_sample, momentum=momentum_time_constant, unit_gain=unit_gain_value)
+    fsadagrad(res.parameters, lr=lr_per_sample, momentum=momentum_time_constant)
+    fsadagrad(res.parameters, lr_per_sample, momentum_time_constant, unit_gain_value)
+    fsadagrad(res.parameters, lr=lr_per_sample, momentum=momentum_time_constant, unit_gain=unit_gain_value)
 
     gamma, inc, dec, max, min = [0.1]*5
     lr_per_sample = learning_rate_schedule([0.1, 0.2], UnitType.sample, 100)
     rmsprop(res.parameters, lr_per_sample, gamma, inc, dec, max, min, True)
 
+    adadelta(res.parameters)
+
 def test_learner_update():
-    i = input_variable(shape=(1,),
-                       needs_gradient=True,
-                       name='a')
+    i = input(shape=(1,), needs_gradient=True, name='a')
     w_init = 1
     w = parameter(shape=(1,), init=w_init)
     res = i * w
@@ -118,6 +116,11 @@ def test_learner_update():
     x = learner.update({w: np.asarray([[2.]], dtype=np.float32)}, 100)
     assert learner.learning_rate() == 0.2
     assert w.value < w_init
+
+    learner.reset_learning_rate(learning_rate_schedule([0.3]*50 + [0.4]*50, UnitType.sample, 1));
+    assert learner.learning_rate() == 0.3
+    x = learner.update({w: np.asarray([[2.]], dtype=np.float32)}, 100)
+    assert learner.learning_rate() == 0.4
 
 def test_training_parameter_schedule():
     training_parameter_schedule(0.01, unit='minibatch')
@@ -130,8 +133,8 @@ def test_training_parameter_schedule():
 
 def test_sweep_based_schedule(tmpdir, device_id):
     from cntk.io import MinibatchSource, CTFDeserializer, StreamDef, StreamDefs
-    from .. import cross_entropy_with_softmax, classification_error, plus, reduce_sum
-    from ..trainer import Trainer
+    from .. import cross_entropy_with_softmax, classification_error, plus, reduce_sum, sequence
+    from ..train.trainer import Trainer
 
     input_dim = 69
 
@@ -155,8 +158,8 @@ def test_sweep_based_schedule(tmpdir, device_id):
         labels    = StreamDef(field='S1', shape=input_dim,  is_sparse=True)
     )), randomize=False)
 
-    in1 = input_variable(shape=(input_dim,))
-    labels = input_variable(shape=(input_dim,))
+    in1 = sequence.input(shape=(input_dim,))
+    labels = sequence.input(shape=(input_dim,))
     p = parameter(shape=(input_dim,), init=10)
     z = plus(in1, reduce_sum(p), name='z')
     ce = cross_entropy_with_softmax(z, labels)
@@ -188,5 +191,5 @@ def test_sweep_based_schedule(tmpdir, device_id):
 
     # fetch minibatch (multiple sweeps)
     data = mbs.next_minibatch(30, input_map=input_map)
-    trainer.train_minibatch(data, [z.output])
+    trainer.train_minibatch(data, outputs=[z.output])
     assert learner.learning_rate() == 0.0

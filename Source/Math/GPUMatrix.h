@@ -79,6 +79,7 @@ private:
 
 public:
     static MATH_API void EnableSync();
+    static MATH_API bool IsSyncEnabled();
 
     SyncGuard(bool forceSync = false);
     ~SyncGuard();
@@ -239,6 +240,8 @@ public:
                      ElemType RMS_WGT_MIN, 
                      const bool needAveMultiplier);
 
+    void AdaDelta(GPUMatrix<ElemType>& gradients, GPUMatrix<ElemType>& functionValues, ElemType rho, ElemType epsilon);
+
     void Reshape(const size_t numRows, const size_t numCols);
 
     // RequireSize is now the new preferred method of ensuring the correct size inside of the Matrix class. Since Resize will fail if the storage object has
@@ -260,7 +263,7 @@ public:
     void SetColumn(const ElemType* colPointer, size_t colInd);
     void SetColumn(const GPUMatrix<ElemType>& valMat, size_t colInd);
 
-    void MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val);
+    void MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry);
 
     //void SetValue(const CPUMatrix<ElemType>& deepCopyFrom);
     void SetValue(const GPUMatrix<ElemType>& deepCopyFrom);
@@ -351,7 +354,7 @@ public:
 
     GPUMatrix<ElemType>& AssignCTCScore(const GPUMatrix<ElemType>& prob, GPUMatrix<ElemType>& alpha, GPUMatrix<ElemType>& beta,
         const GPUMatrix<ElemType> phoneSeq, const GPUMatrix<ElemType> phoneBoundary, ElemType &totalScore, const vector<size_t>& uttMap, const vector<size_t> & uttBeginFrame, const vector<size_t> & uttFrameNum,
-        const vector<size_t> & uttPhoneNum, const size_t samplesInRecurrentStep, const size_t maxFrameNum, const int delayConstraint, const bool isColWise);
+        const vector<size_t> & uttPhoneNum, const size_t samplesInRecurrentStep, const size_t maxFrameNum, const size_t blankTokenId, const int delayConstraint, const bool isColWise);
 
     GPUMatrix<ElemType>& InplaceSqrt();
     GPUMatrix<ElemType>& AssignSqrtOf(const GPUMatrix<ElemType>& a);

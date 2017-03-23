@@ -80,7 +80,7 @@ namespace CNTK
         else if (dataType == DataType::Double)
             return "Double";
         else
-            LogicError("Unknown DataType");
+            LogicError("Unknown DataType.");
     }
 
     inline size_t DataTypeSize(DataType dataType)
@@ -90,7 +90,7 @@ namespace CNTK
         else if (dataType == DataType::Double)
             return sizeof(double);
         else
-            LogicError("Unknown DataType");
+            LogicError("Unknown DataType.");
     }
 
     ///
@@ -111,12 +111,25 @@ namespace CNTK
     ///
     /// Enumeration type denoting the type of a compute device.
     ///
-    enum class DeviceKind
+    enum class DeviceKind : unsigned int
     {
         CPU,
         GPU,
         // TODO: FPGA
     };
+
+    inline const wchar_t* DeviceKindName(DeviceKind deviceKind)
+    {
+        switch (deviceKind)
+        {
+        case DeviceKind::CPU:
+            return L"CPU";
+        case DeviceKind::GPU:
+            return L"GPU";
+        default:
+            LogicError("Unknown DeviceKind.");
+        }
+    }
 
     /// A collection of additional information needed for the distributed trainer to aggregate the gradients
     struct MinibatchInfo
@@ -131,15 +144,33 @@ namespace CNTK
     };
 
     ///
+    /// Additional GPU-specific device information.
+    ///
+    struct GPUProperties final
+    {
+        unsigned int deviceId;
+        int versionMajor;
+        int versionMinor;
+        int cudaCores;
+        std::string name;
+        size_t totalMemory;
+    };
+
+    ///
     /// Denotes a compute device instance.
     ///
     class DeviceDescriptor final
     {
         friend bool operator==(const DeviceDescriptor& first, const DeviceDescriptor& second);
 
-        static std::atomic<bool> s_defaultDeviceFrozen;
-        static std::shared_ptr<DeviceDescriptor> s_defaultDevice;
-        static std::shared_ptr<std::vector<DeviceDescriptor>> s_allDevices;
+        friend struct Test::DeviceSelectionTestFixture;
+
+        static std::mutex s_mutex;
+        static bool s_defaultDeviceFrozen;
+        static std::unique_ptr<DeviceDescriptor> s_defaultDevice;
+        static std::vector<DeviceDescriptor> s_excludedDevices;
+        static std::vector<DeviceDescriptor> s_allDevices;
+        static std::vector<GPUProperties> s_gpuProperties;
     public:
         ///
         /// Returns the Id of 'this' device.
@@ -152,6 +183,11 @@ namespace CNTK
         DeviceKind Type() const { return m_deviceType; }
 
         ///
+        /// Returns true if another CNTK process already holds an exclusive lock on this device.
+        ///
+        CNTK_API bool IsLocked() const;
+
+        ///
         /// Static method to get the descriptor of the CPU device on the local system.
         ///
         static DeviceDescriptor CPUDevice() { return{ 0, DeviceKind::CPU }; }
@@ -161,39 +197,66 @@ namespace CNTK
         ///
         CNTK_API static DeviceDescriptor GPUDevice(unsigned int deviceId);
 
-        ///
-        /// Static method to get the descriptor of the default device for the current process.
-        /// This device is used for all CNTK operations where a device needs to be specified and one is not explicitly specified.
-        ///
-        CNTK_API static DeviceDescriptor DefaultDevice();
-
-        ///
-        /// Static method to get the descriptor of the default device for the current process.
-        /// This device is used for all CNTK operations where a device needs to be specified and one is not explicitly specified.
-        /// Additionally after this method gets executed for the first time, it freezes the default device of the process disallowing
-        /// changing the default device by further calls to SetDefaultDevice.
+        /// 
+        /// This static method freezes the default device of the current CNTK process disallowing further changes
+        /// through calls to TrySetDefaultDevice. This default device will used for all CNTK operations 
+        /// where a device needs to be specified and where none was explicitly provided. If no default device has been specified
+        /// with a call to TrySetDefaultDevice, on the first invocation, this methods will auto-select one 
+        /// of the available (non-locked) devices as the default. Returns a descriptor of the globally default device.
         ///
         CNTK_API static DeviceDescriptor UseDefaultDevice();
 
         ///
-        /// The default device can only be changed if it has not yet been implicitly used by any previous operation in the CNTK library.
+        /// This static method tries to set the specified device as the globally default, optionally acquiring an exclusive 
+        /// (cooperative) lock on the device (GPU). The default device can only be changed if it has not yet been frozen by being 
+        /// implicitly used in any previous CNTK operation.
         ///
-        CNTK_API static void SetDefaultDevice(const DeviceDescriptor& newDefaultDevice);
+        /// CNTK uses a cooperative synchronization for the device access, whereby only a single process can acquire 
+        /// a device lock. However, if exclusivity is not required, the same device can still be accessed without acquiring 
+        /// any locks (in which case, any existing lock corresponding to the device will be ignored).
+        ///
+        /// This methods returns false if  
+        /// * the specified device appears in the list of excluded devices;
+        /// * 'acquireDeviceLock' is true and another process already holds a lock on the device;
+        /// * 'acquireDeviceLock' is true and 'newDefaultDevice' corresponds to a CPU device (which cannot be locked).
+        ///
+        CNTK_API static bool TrySetDefaultDevice(const DeviceDescriptor& newDefaultDevice, bool acquireDeviceLock = false);
 
         ///
-        /// Static method to get the descriptor of the best available device.
+        /// Static method to retrieve additional properties (total memory, number of CUDA cores, etc.) for the specified GPU 
+        /// device. This method will raise an exception if a CPU device is specified as an argument.
         ///
-        CNTK_API static DeviceDescriptor BestDevice();
+        CNTK_API static const GPUProperties& GetGPUProperties(const DeviceDescriptor& device);
+
+        ///
+        /// Static method to specify a list of excluded devices that cannot be used as globally default (neither auto-selected
+        /// nor explicitly specified by 'TrySetDefaultDevice'). For example, to avoid auto-selecting the CPU, invoke 
+        /// 'SetExcludedDevices({DeviceDescriptor::CPUDevice()})'. However, after the default device has been selected and 
+        /// frozen (by a call to UseDefaultDevice()), invoking this methods has no effect, it becomes essentially a no-op.
+        ///
+        CNTK_API static void SetExcludedDevices(const std::vector<DeviceDescriptor>& excluded);
 
         ///
         /// Static method to get a list of descriptors of all available/supported devices.
         ///
         CNTK_API static const std::vector<DeviceDescriptor>& AllDevices();
 
+        std::wstring AsString() const
+        {
+            std::wstring str = DeviceKindName(Type());
+            if (Type() == DeviceKind::GPU)
+                str = str + L"[" + std::to_wstring(Id()) + L"]";
+
+            return str;
+        }
+
     private:
         DeviceDescriptor(unsigned int deviceId, DeviceKind deviceType)
             : m_deviceId(deviceId), m_deviceType(deviceType)
         {}
+        
+        /// Resets static properties, needed for unit-tests.
+        CNTK_API static void Reset();
 
     private:
         unsigned int m_deviceId;
@@ -313,7 +376,7 @@ namespace CNTK
         {
             endAxisId = (endAxisId == SIZE_MAX) ? Rank() : endAxisId;
             if ((endAxisId < beginAxisId) || (endAxisId > Rank()))
-                InvalidArgument("NDShape::SubShape : The specified endAxisId (%d) cannot exceed the rank (%d) of 'this' NDShape and must be >= than the specified beginAxisId (%d)", (int)endAxisId, (int)Rank(), (int)beginAxisId);
+                InvalidArgument("NDShape::SubShape: The specified endAxisId (%zu) must not exceed the rank (%zu) of 'this' NDShape and must be >= than the specified beginAxisId (%zu)", endAxisId, Rank(), beginAxisId);
 
             std::vector<size_t> subShapeDims(m_shapeDims.begin() + beginAxisId, m_shapeDims.begin() + endAxisId);
             return subShapeDims;
@@ -333,7 +396,7 @@ namespace CNTK
         size_t TotalSize() const
         {
             if (HasInferredDimension())
-                RuntimeError("NDShape::TotalSize : TotalSize cannot be determined for a NDShape with one or more dimensions being InferredDimension");
+                RuntimeError("NDShape::TotalSize: TotalSize cannot be determined for a NDShape '%S' with one or more dimensions being InferredDimension.", AsString().c_str());
 
             size_t totalSize = 1;
             for (auto dim : m_shapeDims)
@@ -359,18 +422,35 @@ namespace CNTK
         ///
         std::wstring AsString() const
         {
-            std::wstringstream wStrStream;
-            wStrStream << L"[";
-            for (size_t i = 0; i < Rank(); i++)
+            if (IsUnknown())
             {
-                if (i != 0)
-                    wStrStream << L" x ";
-
-                wStrStream << m_shapeDims[i];
+                return L"[???]";
             }
+            else
+            {
+                bool reverseShape = Internal::IsReversingTensorShapesInErrorMessagesEnabled();
+                auto displayShape = *this;
+                if (reverseShape)
+                {
+                    for (size_t i = 0, j = Rank() - 1; i < Rank(); ++i, --j)
+                        displayShape[i] = (*this)[j];
+                }
 
-            wStrStream << L"]";
-            return wStrStream.str();
+                std::wstringstream wStrStream;
+                wStrStream << L"[";
+                for (size_t i = 0; i < Rank(); i++)
+                {
+                    if (i != 0)
+                        wStrStream << L" x ";
+
+                    if (displayShape[i] != InferredDimension)
+                        wStrStream << displayShape[i];
+                    else
+                        wStrStream << "?";
+                }
+                wStrStream << L"]";
+                return wStrStream.str();
+            }
         }
 
     private:
@@ -489,7 +569,8 @@ namespace CNTK
             : NDArrayView(viewShape, sourceContainer.data(), sourceContainer.size(), DeviceDescriptor::CPUDevice())
         {
             if (sourceContainer.size() != viewShape.TotalSize())
-                InvalidArgument("The size of the STL container does not match the size of the specified viewShape");
+                InvalidArgument("The size (%zu) of the STL container does not match the size (%zu) of the specified viewShape '%S'.",
+                                sourceContainer.size(), viewShape.TotalSize(), viewShape.AsString().c_str());
         }
 
         ///
@@ -520,7 +601,7 @@ namespace CNTK
                 SetValue(value);
                 break;
             default:
-                LogicError("Unsupported DataType %s", DataTypeName(m_dataType));
+                LogicError("Unsupported DataType %s.", DataTypeName(m_dataType));
                 break;
             }
 
@@ -648,6 +729,12 @@ namespace CNTK
         ///
         template <typename ElementType>
         CNTK_API static NDArrayViewPtr RandomUniform(const NDShape& shape, double rangeStart, double rangeEnd, unsigned long seed = SentinelValueForAutoSelectRandomSeed, const DeviceDescriptor& device = DeviceDescriptor::UseDefaultDevice());
+
+        ///
+        /// If the value stored is a scalar, returns it. Otherwise, throws an error.
+        ///
+        template<typename ElementType>
+        ElementType AsScalar() const;
 
     private:
         // Disallow copy and move construction and assignment
@@ -991,6 +1078,7 @@ namespace std {
     };
 }
 
+
 namespace CNTK
 {
     ///
@@ -1054,7 +1142,7 @@ namespace CNTK
             case Type::NDArrayView:
                 return "NDArrayView";
             default:
-                LogicError("Unknown DictionaryValue::Type");
+                LogicError("Unknown DictionaryValue::Type.");
             }
         }
 
@@ -1466,7 +1554,7 @@ namespace CNTK
         case VariableKind::Placeholder:
             return L"Placeholder";
         default:
-            LogicError("Unknown VariableKind");
+            LogicError("Unknown VariableKind.");
         }
     }
 
@@ -1612,6 +1700,11 @@ namespace CNTK
         ///
         CNTK_API bool NeedsGradient() const;
 
+        ///
+        /// Returns a string representation for this variable.
+        ///
+        CNTK_API std::wstring AsString() const;
+
     protected:
 #ifdef SWIG
     public:
@@ -1651,7 +1744,7 @@ private:
 
         CNTK_API static Variable Deserialize(const Dictionary& dictionary, const ::CNTK::DeviceDescriptor& device = DeviceDescriptor::UseDefaultDevice());
 
-        void SetOwner(Function* ownerFunction);
+        void SetOwner(const std::weak_ptr<Function>& ownerFunction);
 
         Variable CompositePreservingCopy(const std::shared_ptr<const Function>& composite) const;
 
@@ -1858,7 +1951,7 @@ private:
             : Variable(variable)
         {
             if (!IsParameter())
-                InvalidArgument("A non-parameter Variable being converted to a Parameter");
+                InvalidArgument("A non-parameter Variable '%S' cannot be converted to a Parameter.", variable.AsString().c_str());
         }
 
         ///
@@ -1957,7 +2050,7 @@ private:
             : Variable(variable)
         {
             if (!IsConstant())
-                InvalidArgument("A non-constant Variable being converted to a Constant");
+                InvalidArgument("A non-constant Variable '%S' being converted to a Constant.", variable.AsString().c_str());
         }
 
         ///
@@ -2024,12 +2117,12 @@ namespace std {
 
 namespace CNTK
 {
-    /// 
+    ///
     /// Denotes a multi-dimensional array with an optional mask and is the actual data fed into or produced from a computation.
     /// The mask is typically lower dimensionality than the data, meaning data is masked in coarse individual sample units where
     /// sample shape is data.Shape().SubShape(0, data.Shape().Rank() - mask.Shape().Rank)
     /// Also, note that the size of the data's trailing mask.Shape().Rank() dimensions must match the mask shape dimensions.
-    /// 
+    ///
     class Value : public std::enable_shared_from_this<Value>
     {
         friend class Utils;
@@ -2067,6 +2160,11 @@ namespace CNTK
 
         ///
         /// Create a new Value object containing a collection of variable length sequences.
+        ///
+        CNTK_API static ValuePtr Create(const NDShape& sampleShape, const std::vector<NDArrayViewPtr>& sequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly, bool createNewCopy);
+
+        ///
+        /// Create a new Value object containing a collection of variable length sequences.
         /// The created Value object contains a copy of the specified 'sequences' data.
         ///
         static ValuePtr Create(const NDShape& sampleShape, const std::vector<NDArrayViewPtr>& sequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false)
@@ -2088,7 +2186,27 @@ namespace CNTK
         /// The created Value object contains a copy of the specified 'sequences' data.
         ///
         template <typename ElementType>
-        CNTK_API static ValuePtr Create(size_t dimension, const std::vector<std::vector<size_t>>& oneHotSequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false);
+        CNTK_API static ValuePtr Create(const NDShape& sampleShape, const std::vector<std::vector<size_t>>& oneHotSequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false);
+
+        ///
+        /// Create a new Value object containing a collection of variable length sequences of one hot vectors
+        /// The created Value object contains a copy of the specified 'sequences' data.
+        ///
+        template <typename ElementType>
+        static ValuePtr Create(const NDShape& sampleShape, const std::vector<std::vector<size_t>>& oneHotSequences, const DeviceDescriptor& device, bool readOnly = false)
+        {
+            return Create<ElementType>(sampleShape, oneHotSequences, {}, device, readOnly);
+        }
+
+        ///
+        /// Create a new Value object containing a collection of variable length sequences of one hot vectors
+        /// The created Value object contains a copy of the specified 'sequences' data.
+        ///
+        template <typename ElementType>
+        static ValuePtr Create(size_t dimension, const std::vector<std::vector<size_t>>& oneHotSequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false)
+        {
+            return Create<ElementType>(NDShape({ dimension }), oneHotSequences, sequenceStartFlags, device, readOnly);
+        }
 
         ///
         /// Create a new Value object containing a collection of variable length sequences of one hot vectors
@@ -2105,10 +2223,10 @@ namespace CNTK
         /// The number of samples in the batch is the number of elements in batch divided by the size of shape (A runtime error occurs if the remainder is not zero).
         /// The created Value object contains a copy of the specified data in batch.
         /// Parameters:
-        ///     shape: the tensor shape of the Value object.
-        ///     batchData : the data to be contained in the Value object.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value object is read - only if this flag is true.
+        ///     sampleShape: the tensor shape of the Value object.
+        ///     batchData: the data to be contained in the Value object.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value object is read-only if this flag is true.
         ///
         template <typename ElementType>
         CNTK_API static ValuePtr CreateBatch(const NDShape& sampleShape, const std::vector<ElementType>& batchData, const DeviceDescriptor& device, bool readOnly = false);
@@ -2119,11 +2237,11 @@ namespace CNTK
         /// The sequenceStartFlag specifies wehther this sequence is a new sequence or continuation of a previous sequence at the same index in the sequences list from a previous call to this method.The sequence length is the number of elements in sequence divided by the size of shape.
         /// (A runtime error occurs if the remainder is not zero).
         /// Parameters:
-        ///     shape: the tensor shape of the Value.
-        ///     sequenceData : the data to be contained in the Value.
-        ///     sequenceStartFlag : true indicates that it is a new sequence. false means a continuation of a previous sequence.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     sampleShape: the tensor shape of the Value.
+        ///     sequenceData: the data to be contained in the Value.
+        ///     sequenceStartFlag: true indicates that it is a new sequence. false means a continuation of a previous sequence.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         CNTK_API static ValuePtr CreateSequence(const NDShape& sampleShape, const std::vector<ElementType>& sequenceData, bool sequenceStartFlag, const DeviceDescriptor& device, bool readOnly = false);
@@ -2134,10 +2252,10 @@ namespace CNTK
         /// The sequence length is the number of elements in sequence divided by the size of shape(A runtime error occurs if the remainder is not zero).
         /// The created sequece is a new sequence.
         /// Parameters:
-        ///     shape: the tensor shape of the Value.
-        ///     sequenceData : the data to be contained in the Value.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     sampleShape: the tensor shape of the Value.
+        ///     sequenceData: the data to be contained in the Value.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateSequence(const NDShape& sampleShape, const std::vector<ElementType>& sequenceData, const DeviceDescriptor& device, bool readOnly = false)
@@ -2152,11 +2270,11 @@ namespace CNTK
         /// The length of each sequence is the number of elements in the corresponding sequence of batchOfSequences divided by the size of shape.
         /// (A runtime error occurs if the remainder is not zero).
         /// Parameters:
-        ///     shape: the tensor shape of the Value.
-        ///     batchOfSequences : the data to be stored in the Value.The outer List represents a collection of sequences with variable length, and the inner List represents each individual sequence.
+        ///     sampleShape: the tensor shape of the Value.
+        ///     batchOfSequences: the data to be stored in the Value.The outer vector represents a collection of sequences with variable length, and the inner vector represents each individual sequence.
         ///     sequenceStartFlags: A collection of boolean value. Each element represent whether the correspoinding sequence in batchOfSequences is a new sequence (in case of true) or a continuation of a previous sequence (in case of false).
-        ///     device : on which device the Value should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     device: on which device the Value should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateBatchOfSequences(const NDShape& sampleShape, const std::vector<std::vector<ElementType>>& batchOfSequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false)
@@ -2172,10 +2290,10 @@ namespace CNTK
         /// (A runtime error occurs if the remainder is not zero).
         /// Each sequence in batchOfSequences is a new sequence.
         /// Parameters:
-        ///     shape: the tensor shape of the Value.
-        ///     batchOfSequences : the data to be stored in the Value.The outer List represents a collection of sequences with variable length, and the inner List represents each individual sequence.
-        ///     device : on which device the Value should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     sampleShape: the tensor shape of the Value.
+        ///     batchOfSequences: the data to be stored in the Value.The outer vector represents a collection of sequences with variable length, and the inner vector represents each individual sequence.
+        ///     device: on which device the Value should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateBatchOfSequences(const NDShape& sampleShape, const std::vector<std::vector<ElementType>>& batchOfSequences, const DeviceDescriptor& device, bool readOnly = false)
@@ -2189,10 +2307,10 @@ namespace CNTK
         /// The number of samples in the batch is the number of elements in batch.
         /// Parameters:
         ///     ElementType: data type of the created Value object. Currently, float and double are supported.
-        ///     dimension : the size of dimension of the one - hot vector.
-        ///     batchData : the collection of indexes representing the batch of samples.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     dimension: the size of dimension of the one-hot vector.
+        ///     batchData: the collection of indexes representing the batch of samples.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         CNTK_API static ValuePtr CreateBatch(size_t dimension, const std::vector<size_t>& batchData, const DeviceDescriptor& device, bool readOnly = false);
@@ -2204,11 +2322,11 @@ namespace CNTK
         /// The sequence length is the number of elements in sequence.
         /// Parameters:
         ///     ElementType: data type of the created Value object.Currently, float and double are supported.
-        ///     dimension : the size of dimension of the one - hot vector.
-        ///     sequenceData : the collection of indexes representing the sequence of samples.
-        ///     sequenceStartFlag : true indicates that it is a new sequence. false means a continuation of a previous sequence.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     dimension: the size of dimension of the one-hot vector.
+        ///     sequenceData: the collection of indexes representing the sequence of samples.
+        ///     sequenceStartFlag: true indicates that it is a new sequence. false means a continuation of a previous sequence.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         CNTK_API static ValuePtr CreateSequence(size_t dimension, const std::vector<size_t>& sequenceData, bool sequenceStartFlag, const DeviceDescriptor& device, bool readOnly = false);
@@ -2220,10 +2338,10 @@ namespace CNTK
         /// The created sequence is a new sequence.
         /// Parameters:
         ///     ElementType: data type of the created Value object.Currently, float and double are supported.
-        ///     dimension : the size of dimension of the one - hot vector.
-        ///     sequenceData : the collection of indexes representing the sequence of samples.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     dimension: the size of dimension of the one-hot vector.
+        ///     sequenceData: the collection of indexes representing the sequence of samples.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateSequence(size_t dimension, const std::vector<size_t>& sequenceData, const DeviceDescriptor& device, bool readOnly = false)
@@ -2238,11 +2356,11 @@ namespace CNTK
         /// The length of each sequence is the number of elements of the corresponding sequence in the inner vector of batchOfSequences.
         /// Parameters:
         ///     ElementType: data type of the created Value object.Currently, float and double are supported.
-        ///     dimension : the size of dimension of the one - hot vector.
-        ///     batchOfSequences : the collection of indexes representing sequences of samples.The outer List represents a collection of sequences with variable length, and the inner List represents each individual sequence.
-        ///     sequenceStartFlags : A collection of boolean value.Each element represent whether the correspoinding sequence in batchOfSequences is a new sequence(in case of true) or a continuation of a previous sequence(in case of false).
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     dimension: the size of dimension of the one-hot vector.
+        ///     batchOfSequences: the collection of indexes representing sequences of samples.The outer vector represents a collection of sequences with variable length, and the inner vector represents each individual sequence.
+        ///     sequenceStartFlags: A collection of boolean value.Each element represent whether the correspoinding sequence in batchOfSequences is a new sequence(in case of true) or a continuation of a previous sequence(in case of false).
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateBatchOfSequences(size_t dimension, const std::vector<std::vector<size_t>>& batchOfSequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly = false)
@@ -2258,15 +2376,57 @@ namespace CNTK
         /// Each sequence in batchOfSequences is a new sequence.
         /// Parameters:
         ///     ElementType: data type of the created Value object.Currently, float and double are supported.
-        ///     dimension : the size of dimension of the one - hot vector.
-        ///     batchOfSequences : the collection of indexes representing sequences of samples.The outer List represents a collection of sequences with variable length, and the inner List represents each individual sequence.
-        ///     device : on which device the Value object should be created.
-        ///     readOnly : the Value is read - only if this flag is true.
+        ///     dimension: the size of dimension of the one-hot vector.
+        ///     batchOfSequences: the collection of indexes representing sequences of samples.The outer vector represents a collection of sequences with variable length, and the inner vector represents each individual sequence.
+        ///     device: on which device the Value object should be created.
+        ///     readOnly: the Value is read-only if this flag is true.
         ///
         template <typename ElementType>
         static ValuePtr CreateBatchOfSequences(size_t dimension, const std::vector<std::vector<size_t>>& batchOfSequences, const DeviceDescriptor& device, bool readOnly = false)
         {
             return Create<ElementType>(dimension, batchOfSequences, {}, device, readOnly);
+        }
+
+        ///
+        /// Creates a new Value object containing a sequence of samples.
+        /// The sequence is represented by CSC sparse input format (http://docs.nvidia.com/cuda/cusparse/#compressed-sparse-column-format-csc)
+        /// The sequenceStartFlag specifies wehther this sequence is a new sequence or continuation of a previous sequence at the same index in the sequences list from a previous call to this method.
+        /// The sequence length is determined by the number of rows of the sparse matrix.
+        /// Parameters:
+        ///     ElementType: data type of the created Value object.Currently, float and double are supported.
+        ///     sampleShape: the tensor shape. For sparse input, the tensor shape leading dimensionality must be the same as the total size of the tensor shape.
+        ///     sequenceLength: the sequence length.
+        ///     sequenceData: the collection of indexes representing the sequence of samples.
+        ///     sequenceStartFlag : true indicates that it is a new sequence. false means a continuation of a previous sequence.
+        ///     device : on which device the Value object should be created.
+        ///     readOnly : the Value is read - only if this flag is true.
+        ///
+        template <typename ElementType>
+        CNTK_API static ValuePtr CreateSequence(const NDShape& sampleShape, size_t sequenceLength, const SparseIndexType* colStarts, const SparseIndexType* rowIndices, const ElementType* nonZeroValues, size_t numNonZeroValues, bool sequenceStartFlag, const DeviceDescriptor& device, bool readOnly = false);
+
+        ///
+        /// Creates a new Value object containing a sequence of samples.
+        /// This method does not have paraemter sequenceStartFlag, and thus the sequence is always a new sequence.
+        /// All other parameters are same as the method above.
+        ///
+        template <typename ElementType>
+        static ValuePtr CreateSequence(const NDShape& sampleShape, size_t sequenceLength, const SparseIndexType* colStarts, const SparseIndexType* rowIndices, const ElementType* nonZeroValues, size_t numNonZeroValues, const DeviceDescriptor& device, bool readOnly = false)
+        {
+            return CreateSequence(sampleShape, sequenceLength, colStarts, rowIndices, nonZeroValues, numNonZeroValues, true, device, readOnly);
+        }
+
+        template <typename ElementType>
+        static ValuePtr CreateSequence(size_t dimension, size_t sequenceLength, const SparseIndexType* colStarts, const SparseIndexType* rowIndices, const ElementType* nonZeroValues, size_t numNonZeroValues, bool sequenceStartFlag, const DeviceDescriptor& device, bool readOnly = false)
+        {
+            auto sampleShape = NDShape({dimension});
+            return CreateSequence(sampleShape, sequenceLength, colStarts, rowIndices, nonZeroValues, numNonZeroValues, sequenceStartFlag, device, readOnly);
+        }
+
+        template <typename ElementType>
+        static ValuePtr CreateSequence(size_t dimension, size_t sequenceLength, const SparseIndexType* colStarts, const SparseIndexType* rowIndices, const ElementType* nonZeroValues, size_t numNonZeroValues, const DeviceDescriptor& device, bool readOnly = false)
+        {
+            auto sampleShape = NDShape({ dimension });
+            return CreateSequence(sampleShape, sequenceLength, colStarts, rowIndices, nonZeroValues, numNonZeroValues, true, device, readOnly);
         }
 
         ///
@@ -2404,7 +2564,8 @@ namespace CNTK
         void CopyVariableValueTo(const Variable& outputVariable, std::vector<std::vector<ElementType>>& sequences)
         {
             if (outputVariable.GetDataType() != GetDataType())
-                InvalidArgument("The outputVariable has a different data type than the Value object.");
+                InvalidArgument("The outputVariable '%S' has a different data type than the Value object.", outputVariable.AsString().c_str());
+
             ResizeOutputBuffer(outputVariable, sequences);
             CopyVariableValueToVector<ElementType>(outputVariable, sequences);
         }
@@ -2419,7 +2580,7 @@ namespace CNTK
         {
             auto dataType = GetDataType();
             if (outputVariable.GetDataType() != dataType)
-                InvalidArgument("The outputVariable has a different data type than the Value object.");
+                InvalidArgument("The outputVariable '%S' has a different data type than the Value object.", outputVariable.AsString().c_str());
 
             ResizeOutputBuffer(outputVariable, sequences);
             if (dataType == DataType::Float)
@@ -2441,8 +2602,6 @@ namespace CNTK
     private:
         template <typename ElementType>
         static void AppendSparseSequenceData(const NDArrayViewPtr& sequenceData, std::vector<SparseIndexType>& colStarts, std::vector<SparseIndexType>& rowIndices, std::vector<char>& nonZeroValues, size_t maxSequenceLength);
-
-        CNTK_API static ValuePtr Create(const NDShape& sampleShape, const std::vector<NDArrayViewPtr>& sequences, const std::vector<bool>& sequenceStartFlags, const DeviceDescriptor& device, bool readOnly, bool createNewCopy);
 
         ///
         /// Copy the data stored in 'this' Value object to the buffer 'sequences' as a collection of variable length sequences.
@@ -2481,7 +2640,8 @@ namespace CNTK
         {
             auto shape = outputVariable.Shape();
             if (shape == NDShape::Unknown || shape.HasInferredDimension())
-                RuntimeError("It is not supported that the outputVariable has a unknown shape or inferred dimension.");
+                RuntimeError("The outputVariable '%S' shape '%S' is unknown shape or has inferred dimension for at least one axis.",
+                              outputVariable.AsString().c_str(), shape.AsString().c_str());
 
             size_t numOfSequences;
             size_t maxSequenceLen;
@@ -2642,11 +2802,6 @@ namespace CNTK
                                        const std::unordered_map<Variable, ValuePtr>& rootGradientValues,
                                        std::unordered_map<Variable, ValuePtr>& backPropagatedGradientValuesForInputs);
 
-        ///
-        /// Returns the name of the operation that this Function denotes
-        ///
-        virtual const std::wstring& OpName() const = 0;
-
     protected:
         ///
         /// Computes and stores the values of specified variables in the 'outputs' map, using provided 'inputs' values for each input of the Function.
@@ -2676,8 +2831,6 @@ namespace CNTK
         ///
         CNTK_API virtual void InferOutputs(std::vector<Variable>& outputs) = 0;
 
-        CNTK_API virtual FunctionPtr Clone(const std::vector<Variable>& /*clonedInputs*/) { NOT_IMPLEMENTED; }
-
     public:
 
         // Optional overrides
@@ -2686,6 +2839,48 @@ namespace CNTK
         /// Destruct this Function.
         ///
         CNTK_API virtual ~Function();
+
+        ///
+        /// Returns the name of the operation that this Function denotes
+        ///
+        CNTK_API virtual const std::wstring& OpName() const;
+
+        ///
+        /// This method needs to be explicitly overriden in subclasses.
+        ///
+        CNTK_API virtual size_t CurrentVersion() const override { NOT_IMPLEMENTED; }
+
+        ///
+        /// Generates a dictionary that captures the state of the Function graph underlying this Function.
+        ///
+        CNTK_API virtual Dictionary Serialize() const override { return Dictionary(); }
+
+        /// 
+        /// Creates a clone of this Function instance, using the specified 'inputs' that are inputs of the clone to be constructed.
+        ///
+        CNTK_API virtual FunctionPtr Clone(const std::vector<Variable>& /*clonedInputs*/) { NOT_IMPLEMENTED; }
+
+    public:
+        ///
+        /// Compute the gradients of the output of this Function, w.r.t. the specified input variables in 'gradients'
+        /// at the specified 'arguments' values for the Function inputs
+        ///
+        CNTK_API void Gradients(const std::unordered_map<Variable, ValuePtr>& arguments,
+                                std::unordered_map<Variable, ValuePtr>& gradients,
+                                std::unordered_map<Variable, ValuePtr>& outputsToEvaluate,
+                                const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice());
+
+        ///
+        /// Compute the gradients of the output of this Function, w.r.t. the specified input variables in 'gradients'
+        /// at the specified 'arguments' values for the Function inputs
+        ///
+        void Gradients(const std::unordered_map<Variable, ValuePtr>& arguments,
+                       std::unordered_map<Variable, ValuePtr>& gradients,
+                       const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice())
+        {
+            std::unordered_map<Variable, ValuePtr> outputsToEvaluate = {};
+            return Gradients(arguments, gradients, outputsToEvaluate, computeDevice);
+        }
 
         ///
         /// Performs forward computation, i.e. evaluation, on the computaion graph using provided 'input' and stores the results in the 'outputs' map.
@@ -2702,21 +2897,11 @@ namespace CNTK
         CNTK_API FunctionPtr Clone(ParameterCloningMethod parameterCloneMethod = ParameterCloningMethod::Clone, const std::unordered_map<Variable, Variable>& replacements = {}) const;
 
         ///
-        /// Generates a dictionary that captures the state of the Function graph underlying this Function.
-        ///
-        virtual Dictionary Serialize() const override { return Dictionary(); }
-
-        ///
         /// Deserializes a Function from the dictionary.
         /// TODO: add a second overload with a 'Function builder' parameter that would allow hooking
         /// user-defined op-codes with custom functionality.
         ///
         CNTK_API static FunctionPtr Deserialize(const Dictionary& dictionary, const ::CNTK::DeviceDescriptor& device = DeviceDescriptor::UseDefaultDevice());
-
-        ///
-        /// This method needs to be explicitly overriden in subclasses.
-        ///
-        size_t CurrentVersion() const override { NOT_IMPLEMENTED; }
 
     public:
         ///
@@ -2764,7 +2949,7 @@ namespace CNTK
 
         ///
         /// Returns the root of the Function graph underlying this block Function.
-        /// Throws an exception of this is not a block Function
+        /// Throws an exception if this is not a block Function
         ///
         CNTK_API FunctionPtr BlockRoot() const;
 
@@ -2793,7 +2978,8 @@ namespace CNTK
         {
             auto outputs = Outputs();
             if (outputs.size() > 1)
-                RuntimeError("A Function instance with more than one output cannot be implicitly converted to a Variable");
+                RuntimeError("A Function instance '%S' with more than one output cannot be implicitly converted to a Variable.", AsString().c_str());
+
             return outputs[0];
         }
 
@@ -2808,11 +2994,11 @@ namespace CNTK
         ///
         /// Returns a set comprising of all input variables of 'this' Function's variables that are not of kind 'Parameter' or 'Constant'.
         ///
-        std::vector<Variable> Arguments() const
+        std::vector<Variable> Arguments(bool rowMajor = false) const
         {
             return FilteredInputs<Variable>([](const Variable& var) {
-                return (var.IsInput() || var.IsPlaceholder() || var.IsOutput());
-            });
+                return IsArgument(var);
+            }, rowMajor);
         }
 
         ///
@@ -2853,11 +3039,11 @@ namespace CNTK
         FunctionPtr FindByName(const std::wstring& name, bool nestedSearchInsideBlockFunction = false)
         {
             FunctionPtr  foundFunction = nullptr;
-            PreorderTraverseFunctions(RootFunction(), [&foundFunction, &name](const FunctionPtr& function) {
+            PreorderTraverseFunctions(RootFunction(), [&foundFunction, &name, this](const FunctionPtr& function) {
                 if (name.compare(function->Name()) == 0)
                 {
                     if (foundFunction != nullptr)
-                        RuntimeError("Multiple functions with the same name are found in the Function graph underlying 'this' Function.");
+                        RuntimeError("FindByName: Multiple functions with the name '%S' are found in the Function graph underlying 'this' Function.", name.c_str());
                     else
                         foundFunction = function;
                 }
@@ -2912,9 +3098,24 @@ namespace CNTK
         CNTK_API static FunctionPtr LoadModel(const std::wstring& modelFile, const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice());
 
         ///
+        /// Load a Function from a memory buffer
+        ///
+        CNTK_API static FunctionPtr LoadModel(char *modelBuffer, size_t modelBufferLength, const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice());
+
+        ///
+        /// Load a Function from an istream. The legacy V1 model is not supported.
+        ///
+        CNTK_API static FunctionPtr LoadModel(std::istream& inputStream, const DeviceDescriptor& computeDevice = DeviceDescriptor::UseDefaultDevice());
+
+        ///
         /// Prints the entire graph underlying this Function to stderr
         ///
         CNTK_API void PrintGraph() const;
+
+        ///
+        /// Returns a string representation of this Function
+        ///
+        CNTK_API std::wstring AsString(bool doNotInferOutputs = true) const;
 
         ///
         /// Maximum number of outputs that is currently supported.
@@ -2922,6 +3123,11 @@ namespace CNTK
         static const int MaxNumOutputs = 64;
 
     protected:
+        static bool IsArgument(const Variable& var)
+        {
+            return (var.IsInput() || var.IsPlaceholder() || var.IsOutput());
+        }
+
         ///
         /// Protected constructor for derived 'Function' types to specify the actual input and output variables for the (primitive) Function instance.
         ///
@@ -2982,11 +3188,11 @@ namespace CNTK
         CNTK_API std::vector<Variable>& InitOutputs();
 
         template <typename VariableType, typename FilterFunction>
-        std::vector<VariableType> FilteredInputs(FilterFunction&& filterFunc) const
+        std::vector<VariableType> FilteredInputs(FilterFunction&& filterFunc, bool rowMajor = false) const
         {
             std::vector<VariableType> filteredInputs;
             std::unordered_set<Variable> uniqueFilteredInputs;
-            auto inputs = Inputs();
+            auto inputs = Inputs(rowMajor);
             for (auto inputVar : inputs)
             {
                 if (filterFunc(inputVar) && (uniqueFilteredInputs.find(inputVar) == uniqueFilteredInputs.end()))
@@ -3123,6 +3329,7 @@ namespace CNTK
 
     ///
     /// Create an instance of the CNTK built-in softmax operation on specified tensor input operand
+    /// TODO: this Softmax() needs to support specifying the axis
     ///
     CNTK_API FunctionPtr Softmax(const Variable& operand, const std::wstring& name = L"");
 
@@ -3144,7 +3351,7 @@ namespace CNTK
     ///
     /// Create an instance of the slice operation on specified tensor input operand
     ///
-    CNTK_API FunctionPtr Slice(const Variable& operand, const Axis& axis, int beginIndex, int endIndex, const std::wstring& name = L"");
+    CNTK_API FunctionPtr Slice(const Variable& operand, const std::vector<Axis>& axis, const std::vector<int>& beginIndex, const std::vector<int>& endIndex, const std::wstring& name = L"");
 
     ///
     /// Create an instance of the random_sample operation on specified sampling weights input vector
@@ -3252,6 +3459,14 @@ namespace CNTK
     /// TODO: Specify the constraints on the shapes of the operands.
     /// TODO: Document inferInputRankToMap
     ///
+
+    // special values for Times inferInputRankToMap
+    enum : int
+    {
+        TimesNoInferredInputRank                        = -1, // the default, do not infer left operand input rank from right operand
+        TimesReduceSequenceAxisWithoutInferredInputRank = -2, // reduce sequence axis. Currently only support cases like (m x k) x (k) -> (m) for sequences
+    };
+
     CNTK_API FunctionPtr Times(const Variable& leftOperand, const Variable& rightOperand, size_t outputRank, int inferInputRankToMap, const std::wstring& name = L"");
 
     ///
@@ -3261,7 +3476,7 @@ namespace CNTK
     ///
     inline FunctionPtr Times(const Variable& leftOperand, const Variable& rightOperand, size_t outputRank, const std::wstring& name = L"")
     {
-        return Times(leftOperand, rightOperand, outputRank, /*inferInputRankToMap =*/ -1, name);
+        return Times(leftOperand, rightOperand, outputRank, TimesNoInferredInputRank, name);
     }
 
     ///
@@ -3298,6 +3513,11 @@ namespace CNTK
     CNTK_API FunctionPtr CosineDistance(const Variable& leftOperand, const Variable& rightOperand, const std::wstring& name = L"");
 
     ///
+    /// Create an instance of the CNTK built-in operation to compute the cosine distance with negative samplesfor the specified input operands.
+    ///
+    CNTK_API FunctionPtr CosineDistanceWithNegativeSamples(const Variable& leftOperand, const Variable& rightOperand, size_t shiftWindow, size_t numberOfNegativeSamples, const std::wstring& name = L"");
+
+    ///
     /// Create an instance of the CNTK built-in operation to compute binary cross-entropy for specified input operands.
     ///
     CNTK_API FunctionPtr BinaryCrossEntropy(const Variable& prediction, const Variable& targets, const std::wstring& name = L"");
@@ -3328,7 +3548,18 @@ namespace CNTK
     ///
     /// Create an instance of the CNTK built-in operation for computing the edit distance error for specified operands.
     ///
-    CNTK_API FunctionPtr EditDistanceError(const Variable& prediction, const Variable& labels, float substitutionPenalty, float deletionPenalty, float insertionPenalty, bool squashInputs, const std::vector<size_t>& samplesToIgnore, const std::wstring& name = L"");
+    CNTK_API FunctionPtr EditDistanceError(const Variable& prediction, const Variable& labels, float substitutionPenalty, float deletionPenalty, float insertionPenalty, bool squashInputs, const std::vector<size_t>& tokensToIgnore, const std::wstring& name = L"");
+
+    ///
+    /// Create an instance of the CNTK built-in operation for computing the forwardbackward for specified operands.
+    ///
+    CNTK_API FunctionPtr ForwardBackward(const Variable& graph, const Variable& features, size_t blankTokenId, int delayConstraint, const std::wstring& name = L"");
+
+    ///
+    /// Create an instance of the CNTK built-in operation for computing the labels to graph for input operands.
+    ///
+    CNTK_API FunctionPtr LabelsToGraph(const Variable& labels, const std::wstring& name = L"");
+
 
     ///
     /// Create an instance of the CNTK built-in operation for computing the classification prediction error for specified operands.
@@ -3443,19 +3674,33 @@ namespace CNTK
     ///
     CNTK_API FunctionPtr PerDimMeanVarianceNormalize(const Variable& operand, const NDArrayViewPtr& mean, const NDArrayViewPtr& invStdDev, const std::wstring& name = L"");
 
+
     ///
-    /// TODO:
+    /// Convolution 
     ///
     CNTK_API FunctionPtr Convolution(const Variable& convolutionMap,
-                                     const Variable& operand,
-                                     const NDShape& strides = {1},
-                                     const std::vector<bool>& sharing = {true},
-                                     const std::vector<bool>& autoPadding = {true},
-                                     const NDShape& lowerPad = {0},
-                                     const NDShape& upperPad = {0},
-                                     bool transpose = false,
-                                     size_t maxTempMemSizeInSamples = 0,
+                                     const Variable& operand, 
+                                     const NDShape& strides = { 1 },
+                                     const std::vector<bool>& sharing = { true },
+                                     const std::vector<bool>& autoPadding = { true },
+                                     const NDShape& lowerPad = { 0 },
+                                     const NDShape& upperPad = { 0 },
+                                     size_t maxTempMemSizeInSamples = 0, 
                                      const std::wstring& name = L"");
+
+    ///
+    /// Convolution transpose
+    ///
+    CNTK_API FunctionPtr ConvolutionTranspose(const Variable& convolutionMap,
+        const Variable& operand,
+        const NDShape& strides = { 1 },
+        const std::vector<bool>& sharing = { true },
+        const std::vector<bool>& autoPadding = { true },
+        const NDShape& lowerPad = { 0 },
+        const NDShape& upperPad = { 0 },
+        const NDShape& outputShape = { 0 },
+        size_t maxTempMemSizeInSamples = 0,
+        const std::wstring& name = L"");
 
     ///
     /// Create an instance of the CNTK built-in ROI pooling operation on specified tensor input operands with the specified output shape
@@ -3481,6 +3726,8 @@ namespace CNTK
                                  const std::vector<bool>& autoPadding = {false},
                                  const NDShape& lowerPad = {0},
                                  const NDShape& upperPad = {0},
+                                 const bool ceilOutDim = false,
+                                 const bool includePad = false,
                                  const std::wstring& name = L"");
 
     ///
@@ -3505,7 +3752,7 @@ namespace CNTK
                                             const Variable& bias,
                                             const Variable& runningMean,
                                             const Variable& runningInvStd,
-                                            const Variable& runningSampleCount,
+                                            const Variable& runningCount,
                                             bool spatial,
                                             double normalizationTimeConstant = 0,
                                             double blendTimeConstant = 0,
@@ -3525,7 +3772,7 @@ namespace CNTK
     ///
     /// Create an instance of the CNTK built-in elementwise choice operation using a condition tensor for specified tensor operands.
     ///
-    CNTK_API FunctionPtr ElementSelect(const Variable& condition, const Variable& leftOperand, const Variable& rightOperand, const std::wstring& name = L"");
+    CNTK_API FunctionPtr ElementSelect(const Variable& condition, const Variable& thenOperand, const Variable& elseOperand, const std::wstring& name = L"");
 
     ///
     /// Create an instance of the CNTK built-in splice operation to splice together all the specified tensor operands into a single output tensor
@@ -3578,6 +3825,11 @@ namespace CNTK
     /// with the specified input operand and learning parameter alpha.
     ///
     CNTK_API FunctionPtr PReLU(const Variable& alpha, const Variable& operand, const std::wstring& name = L"");
+
+    ///
+    /// Create an instance of the CNTK built-in elementwise softplus operation 
+    ///
+    CNTK_API FunctionPtr Softplus(const Variable& operand, const std::wstring& name = L"");
 
     ///
     /// Create an instance of the CNTK built-in argmax operation on specified tensor input operand along the specified axis
@@ -3695,6 +3947,9 @@ namespace CNTK
         CNTK_API static TrainingParameterSchedule<T> Deserialize(const Dictionary& dictionary);
 
     private:
+
+        friend class Learner;
+
         CNTK_API void ConstructSchedule(const std::vector<std::pair<size_t, T>>& schedule);
 
         CNTK_API TrainingParameterSchedule(const Dictionary& dictionary);
@@ -3864,11 +4119,11 @@ namespace CNTK
 
         ///
         /// Sets a new learning rate overriding the schedule parameter used to construct this learner.
+        /// The new schedule is adjusted to be relative to the current number of elapsed samples/sweeps:
+        /// the 0 offset in the new schedule corresponds to the current value of elapsed samples/sweeps, 
+        /// and it takes effect from the current position in the training process onwards.
         ///
-        virtual void ResetLearningRate(const LearningRateSchedule& learningRateSchedule)
-        {
-            m_learningRateSchedule = learningRateSchedule;
-        }
+        CNTK_API virtual void ResetLearningRate(const LearningRateSchedule& learningRateSchedule);
 
         ///
         /// Resets smoothed gradients.
@@ -3948,16 +4203,23 @@ namespace CNTK
     static MomentumSchedule DefaultVarianceMomentum = MomentumAsTimeConstantSchedule(2 * 3600 * 100);
 
     ///
+    /// Create an instance of FSAdaGrad learner as the original paper.
+    ///
+    CNTK_API LearnerPtr FSAdaGradLearner(const std::vector<Parameter>& parameters,
+                                         const LearningRateSchedule& learningRateSchedule,
+                                         const MomentumSchedule& momentumSchedule,
+                                         bool unitGain = DefaultUnitGainValue(),
+                                         const MomentumSchedule& varianceMomentumSchedule = DefaultVarianceMomentum,
+                                         AdditionalLearningOptions additionalOptions = AdditionalLearningOptions());
+
+    ///
     /// Create an instance of Adam learner as the original paper.
-    /// Due to history reason, the legacy implementation of AdamLearner is FSAdaGrad. To keep compitability on the interface, we
-    /// will switch to the original Adam only when lowMemory = false, while keep the legacy logic when it leaves default, aka. true.
     ///
     CNTK_API LearnerPtr AdamLearner(const std::vector<Parameter>& parameters,
                                     const LearningRateSchedule& learningRateSchedule,
                                     const MomentumSchedule& momentumSchedule,
                                     bool unitGain = DefaultUnitGainValue(),
                                     const MomentumSchedule& varianceMomentumSchedule = DefaultVarianceMomentum,
-                                    bool lowMemory = true,
                                     AdditionalLearningOptions additionalOptions = AdditionalLearningOptions());
 
     ///
@@ -3980,6 +4242,14 @@ namespace CNTK
                                        double min,
                                        bool needAveMultiplier = true,
                                        AdditionalLearningOptions additionalOptions = AdditionalLearningOptions());
+
+    ///
+    /// Create an instance of the CNTK built-in AdaDelta learner.
+    ///
+    CNTK_API LearnerPtr AdaDeltaLearner(const std::vector<Parameter>& parameters,
+                                        double rho = 0.95,
+                                        double epsilon = 1e-8,
+                                        AdditionalLearningOptions additionalOptions = AdditionalLearningOptions());
 
     ///
     /// Distributed Learner.
@@ -4041,10 +4311,10 @@ namespace CNTK
               m_distributeAfterSamples(distributeAfterSamples)
         {
             if (!m_learner)
-                InvalidArgument("Learner is not allowed to be null.");
+                InvalidArgument("Learner passed to a Distributed learner ctor must not be null.");
 
             if (!m_communicator)
-                InvalidArgument("Communicator is not allowed to be null.");
+                InvalidArgument("Communicator passed to a Distributed learner ctor must not be null.");
         }
 
         const LearnerPtr m_learner;
@@ -4088,6 +4358,11 @@ namespace CNTK
         StorageFormat m_storageFormat; // Storage format of the stream
         DataType m_elementType;        // Element type of the stream
         NDShape m_sampleLayout;        // Layout of the sample for the stream
+
+        std::wstring AsString() const
+        {
+            return m_name + L"(" + m_sampleLayout.AsString() + L")";
+        }
     };
 
     inline bool operator==(const StreamInformation& left, const StreamInformation& right)
@@ -4232,6 +4507,9 @@ namespace CNTK
         void UpdateTrainingProgress(size_t numSamples, const ValuePtr& loss, const ValuePtr& evalCriterion, const DeviceDescriptor& computeDevice);
         void UpdateTestProgress(size_t numSamples, const ValuePtr& evalCriterion, const DeviceDescriptor& computeDevice);
         void AddProgressWriters(const std::vector<ProgressWriterPtr>& progressWriters);
+
+        // TODO: Workaround for back compat. Should not be used and will be removed in the next version.
+        friend CNTK_API void ::CNTK::Internal::AddProgressWriters(const TrainerPtr&, const std::vector<ProgressWriterPtr>&);
 
         FunctionPtr m_combinedTrainingFunction;
         FunctionPtr m_model;
@@ -4649,12 +4927,80 @@ namespace CNTK
     ///
     /// Built-in MPI-based communicator.
     ///
-    CNTK_API DistributedCommunicatorPtr MPICommunicator();
+    CNTK_API DistributedCommunicatorPtr MPICommunicator(size_t packThresholdSizeInBytes = Internal::DefaultPackThresholdSizeInBytes());
 
     ///
     /// Distributed communicator that allows quantized aggregations.
     ///
     CNTK_API QuantizedDistributedCommunicatorPtr QuantizedMPICommunicator(bool zeroThresholdFor1Bit, bool useQuantizationForSelfStripe, size_t numQuantizationBits);
+
+    ///
+    /// Cross validation configuration
+    ///
+    struct CrossValidationConfig
+    {
+    public:
+        /// Cross validation configuration.
+        /// crossValidationSource: a minibatch source that will be used for cross validation.
+        /// crossValidationSchedule : a minibatch size schedule for cross validation.
+        /// crossValidationFrequencyInSamples: frequency in samples when to perform cross validation.
+        ///
+        CNTK_API CrossValidationConfig(const MinibatchSourcePtr& crossValidationSource,
+            const MinibatchSizeSchedule& crossValidationSchedule = MinibatchSizeSchedule(64),
+            size_t crossValidationFrequencyInSamples = std::numeric_limits<size_t>::max());
+
+    private:
+        friend class TrainingSession;
+        const MinibatchSourcePtr m_source;
+        const MinibatchSizeSchedule m_mbSize;
+        const size_t m_frequency;
+    };
+
+    ///
+    /// Checkpoint configuration
+    ///
+    struct CheckpointConfig
+    {
+    public:
+        ///
+        /// Checkpoint configuration.
+        /// checkPointFileName: a file name where the checkpoint will be stored.
+        /// checkpointFrequencyInSamples: frequency in samples when to perform checkpointing.
+        /// restoreFromCheckpointIfExists: if flag is set, the training session will try to restore before training.
+        /// preserveAllCheckpoints: if flag is set, all checkpoints will be preserved.
+        ///
+        CNTK_API CheckpointConfig(
+            const std::wstring& checkPointFileName,
+            size_t checkpointFrequencyInSamples = std::numeric_limits<size_t>::max(),
+            bool restoreFromCheckpointIfExists = true,
+            bool preserveAllCheckpoints = false);
+
+    private:
+        friend class TrainingSession;
+        const std::wstring m_fileName;
+        const bool m_restore;
+        const bool m_preserveAll;
+        const size_t m_frequency;
+    };
+
+    ///
+    /// Test configuration
+    ///
+    struct TestConfig
+    {
+    public:
+        /// Test configuration.
+        /// source : a minibatch source that will be used for test
+        /// schedule : a minibatch size schedule
+        ///
+        CNTK_API TestConfig(const MinibatchSourcePtr& source,
+            const MinibatchSizeSchedule& schedule = MinibatchSizeSchedule(64));
+
+    private:
+        friend class TrainingSession;
+        const MinibatchSourcePtr m_source;
+        const MinibatchSizeSchedule m_mbSize;
+    };
 
     ///
     /// Base abstract class that represents a training session.
@@ -4667,12 +5013,32 @@ namespace CNTK
             size_t frequency;
             size_t currentIndex;
             size_t sampleCountWhenLastCalled;
-            std::function<void(size_t currentIndex, const DeviceDescriptor&)> action;
+            std::function<bool(size_t currentIndex, const DeviceDescriptor&)> action;
         };
 
     public:
-        /// 
+        ///
         /// Constructor of the training session:
+        /// trainer : an instance of a trainer
+        /// trainingSource: minibatch source
+        /// minibatchSizeSchedule: mb size schedule
+        /// inputVarToStream: var to stream mapping
+        /// maxNumTrainingSamples: max number of training samples
+        /// progress : a training configuration
+        ///
+        CNTK_API TrainingSession(
+            const TrainerPtr& trainer,
+            const MinibatchSourcePtr& trainingSource,
+            const MinibatchSizeSchedule& minibatchSizeSchedule,
+            const std::unordered_map<Variable, StreamInformation>& inputVarToStream,
+            size_t maxNumTrainingSamples,
+            size_t progressFrequency,
+            const CheckpointConfig& checkpointing,
+            const CrossValidationConfig& crossValidation,
+            const TestConfig& test);
+
+        /// !!! DEPRECATED !!!
+        /// Constructor of the training session: 
         /// trainingSource : a minibatch source that will be used for training
         /// trainer : an instance of a trainer
         /// modelInputsToMinibatchSourceMapping : mapping between the input node of the model and the corresponding stream
@@ -4723,7 +5089,7 @@ namespace CNTK
         ///
         virtual size_t GetMinibatchSize()
         {
-            return m_minibatchSizeSchedule[Trainer()->TotalNumberOfSamplesSeen()];
+            return m_mbSize[Trainer()->TotalNumberOfSamplesSeen()];
         }
 
         ///
@@ -4733,8 +5099,9 @@ namespace CNTK
 
         ///
         /// Optionally overridable callback that is invoked after each minibatch.
+        /// If return value is false, the training will be stopped.
         ///
-        CNTK_API virtual void OnMinibatchEnd() {};
+        CNTK_API virtual bool OnMinibatchEnd() { return true; };
 
         ///
         /// Optionally overridable callback that is invoked before each checkpoint.
@@ -4753,16 +5120,18 @@ namespace CNTK
 
         ///
         /// Optionally overridable callback that is invoked after each cross validation.
+        /// If return value is false, the training will be stopped.
         ///
-        CNTK_API virtual void OnCrossValidationEnd(size_t /*validationIndex*/, double /*averageError*/, size_t /*numberOfSamples*/, size_t /*numberOfMinibatches*/) {};
+        CNTK_API virtual bool OnCrossValidationEnd(size_t /*validationIndex*/, double /*averageError*/, size_t /*numberOfSamples*/, size_t /*numberOfMinibatches*/)
+        {
+            return true;
+        }
 
     protected:
         ///
         /// Accessors.
         ///
         TrainerPtr Trainer() const { return m_trainer; }
-
-        MinibatchSourcePtr TrainingMinibatchSource() const { return m_trainingSource; }
 
     private:
         /// Disallow copy and move construction and assignment
@@ -4777,32 +5146,32 @@ namespace CNTK
         void SaveCheckpoint(size_t currentIndex);
         void SaveFinalCheckpoint();
 
-        void CrossValidate(size_t currentIndex, const DeviceDescriptor& computeDevice);
+        bool CrossValidate(size_t currentIndex, const DeviceDescriptor& computeDevice);
         void ReportProgress(size_t currentIndex);
+        void Test(const DeviceDescriptor& computeDevice);
 
-        // Checkpointing
-        const std::wstring m_checkPointFileName;
-        const bool m_restoreFromCheckpointIfExists;
-        const bool m_saveAllCheckpoints;
-
-        // Training
-        MinibatchSourcePtr m_trainingSource;
-        TrainerPtr m_trainer;
-        std::unordered_map<Variable, StreamInformation> m_modelInputToMinibatchSourceStream;
         size_t m_parallelAfterSamples;
         size_t m_workerRank;
         size_t m_numberOfWorkers;
-        const MinibatchSizeSchedule m_minibatchSizeSchedule;
-        const size_t m_maxNumberOfSamples;
-
-        // Cross validation.
-        MinibatchSourcePtr m_crossValidationSource;
-        const MinibatchSizeSchedule m_crossValidationSchedule;
 
         std::vector<PeriodicAction> m_actions;
+
+        // Training.
+        TrainerPtr m_trainer;
+        const MinibatchSourcePtr m_source;
+        const MinibatchSizeSchedule m_mbSize;
+        const std::unordered_map<Variable, StreamInformation> m_varToStream;
+        const size_t m_maxNumSamples;
+        const size_t m_progressFrequency;
+
+        // Additional configuration.
+        CheckpointConfig m_checkpoint;
+        CrossValidationConfig m_cv;
+        TestConfig m_test;
     };
 
     ///
+    /// !!! DEPRECATED !!!
     /// Creates an instance of the training session class. Parameters match the paramters of the TrainingSession constructor.
     ///
     CNTK_API TrainingSessionPtr CreateBasicTrainingSession(
@@ -4919,6 +5288,19 @@ namespace CNTK
         std::unique_ptr<Impl> m_training;
         std::unique_ptr<Impl> m_test;
     };
+
+    /// Creates an instance of the training session class. Parameters match the parameters of the TrainingSession constructor.
+    ///
+    CNTK_API TrainingSessionPtr CreateTrainingSession(
+        const TrainerPtr& trainer,
+        const MinibatchSourcePtr& trainingSource,
+        const MinibatchSizeSchedule& minibatchSizeSchedule,
+        const std::unordered_map<Variable, StreamInformation>& inputVarToStream,
+        size_t maxNumTrainingSamples,
+        size_t progressFrequency,
+        const CheckpointConfig& checkpointing,
+        const CrossValidationConfig& crossValidation,
+        const TestConfig& test);
 }
 
 

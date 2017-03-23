@@ -68,10 +68,11 @@ def strip_ext(fn):
 
 if IS_WINDOWS:
     libname_rt_ext = '.dll'
-
-    link_libs = ["CNTKLibrary-2.0"]
+    cntkLibraryName = "Cntk.Core-" + os.environ['CNTK_COMPONENT_VERSION']
+    link_libs = [cntkLibraryName]
 else:
-    link_libs = ["cntklibrary-2.0"]
+    cntkLibraryName = "Cntk.Core-" + os.environ['CNTK_COMPONENT_VERSION']
+    link_libs = [cntkLibraryName]
     libname_rt_ext = '.so'
 
 
@@ -161,7 +162,7 @@ if IS_WINDOWS:
     kwargs = dict(data_files = [('.', [ os.path.join('cntk', lib) for lib in rt_libs ])],
                   package_data = package_data)
 else:
-    # On Linux copy all runtime libs into the cntk/lib folder. 
+    # On Linux copy all runtime libs into the cntk/lib folder.
     package_data['cntk'] += rt_libs
     kwargs = dict(package_data = package_data)
 
@@ -174,7 +175,7 @@ if IS_PY2:
     cntk_install_requires.append('enum34>=1.1.6')
 
 setup(name="cntk",
-      version="2.0.beta12.0",
+      version="2.0.beta15.0",
       url="http://cntk.ai",
       ext_modules=[cntk_module],
       packages=packages,

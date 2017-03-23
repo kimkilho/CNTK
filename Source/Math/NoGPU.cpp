@@ -106,7 +106,7 @@ GPUSPARSE_INDEX_TYPE* GPUSparseMatrix<ElemType>::GetCondensedVector() const
 }
 
 template <class ElemType>
-void GPUSparseMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val)
+void GPUSparseMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry)
 {
 }
 
@@ -160,7 +160,7 @@ void GPUSparseMatrix<ElemType>::RequireSizeAndAllocate(const size_t numRows, con
 {
 }
 template <class ElemType>
-void GPUSparseMatrix<ElemType>::RequireSize(const size_t numRows, const size_t numCols, const MatrixFormat format, const bool growOnly)
+void GPUSparseMatrix<ElemType>::RequireSize(const size_t numRows, const size_t numCols, const size_t numNZElemToReserve, const MatrixFormat format, const bool growOnly)
 {
 }
 template <class ElemType>
@@ -270,6 +270,11 @@ template<class ElemType>
 ElemType GPUSparseMatrix<ElemType>::RmsProp(GPUMatrix<ElemType>&, ElemType, ElemType, ElemType, ElemType, ElemType, const bool)
 {
     return 1;
+}
+
+template<class ElemType>
+void GPUSparseMatrix<ElemType>::AdaDelta(GPUMatrix<ElemType>&c, GPUMatrix<ElemType>&functionValues, ElemType rho, ElemType epsilon)
+{
 }
 
 template <class ElemType>
@@ -1010,7 +1015,7 @@ void GPUMatrix<ElemType>::SetColumn(const GPUMatrix<ElemType>& valMat, size_t co
 }
 
 template <class ElemType>
-void GPUMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val)
+void GPUMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry)
 {
 }
 
@@ -1093,6 +1098,11 @@ template <class ElemType>
 ElemType GPUMatrix<ElemType>::RmsProp(GPUMatrix<ElemType>& gradients, ElemType RMS_GAMMA, ElemType RMS_WGT_INC, ElemType RMS_WGT_MAX, ElemType RMS_WGT_DEC, ElemType RMS_WGT_MIN, const bool needAveMultiplier)
 {
     return 0;
+}
+
+template <class ElemType>
+void GPUMatrix<ElemType>::AdaDelta(GPUMatrix<ElemType>& gradients, GPUMatrix<ElemType>& functionValues, ElemType rho, ElemType epsilon)
+{
 }
 
 template <class ElemType>
@@ -1395,7 +1405,7 @@ GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignSequenceError(const ElemType hsm
 template <class ElemType>
 GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignCTCScore(const GPUMatrix<ElemType>& prob, GPUMatrix<ElemType>& alpha, GPUMatrix<ElemType>& beta,
     const GPUMatrix<ElemType> phoneSeq, const GPUMatrix<ElemType> phoneBound, ElemType &totalScore, const std::vector<size_t>& uttMap, const std::vector<size_t> & uttBeginFrame, const std::vector<size_t> & uttFrameNum,
-    const std::vector<size_t> & uttPhoneNum, const size_t samplesInRecurrentStep, const size_t maxFrameNum, const int delayConstraint, const bool isColWise)
+    const std::vector<size_t> & uttPhoneNum, const size_t samplesInRecurrentStep, const size_t maxFrameNum, const size_t blankTokenId, const int delayConstraint, const bool isColWise)
 {
     return *this;
 }
@@ -2314,7 +2324,7 @@ void* GPUMatrix<ElemType>::s_curandGenerator = NULL;
 
 template <class ElemType>
 std::unique_ptr<ConvolutionEngine<ElemType>> CuDnnConvolutionEngineFactory<ElemType>::Create(ConvolveGeometryPtr, DEVICEID_TYPE,
-                                                                                             ImageLayoutKind, size_t, PoolKind, bool)
+                                                                                             ImageLayoutKind, size_t, PoolKind, bool, bool)
 {
     RuntimeError("The code is compiled with CPUONLY macro.");
 }
@@ -2355,6 +2365,9 @@ float CudaTimer::Elapsed()
 /*static*/ void SyncGuard::EnableSync()
 {
 }
+
+/*static*/ bool SyncGuard::IsSyncEnabled() { return false; }
+
 } } }
 
 // define a dummy GPUWatcher class too

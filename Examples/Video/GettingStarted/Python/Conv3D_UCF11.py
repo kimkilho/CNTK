@@ -16,10 +16,11 @@ import imageio
 
 from cntk import Trainer
 from cntk.utils import *
+from cntk.logging import *
 from cntk.layers import *
-from cntk.learner import sgd, momentum_sgd, learning_rate_schedule, momentum_schedule, momentum_as_time_constant_schedule, UnitType
-from cntk.ops import input_variable, cross_entropy_with_softmax, classification_error, relu, minus, element_times, constant
-from _cntk_py import set_computation_network_trace_level
+from cntk.learners import sgd, momentum_sgd, learning_rate_schedule, momentum_schedule, momentum_as_time_constant_schedule, UnitType
+from cntk import input, cross_entropy_with_softmax, classification_error, relu, minus, element_times, constant
+from cntk.debugging import set_computation_network_trace_level
 
 # Paths relative to current python file.
 abs_path   = os.path.dirname(os.path.abspath(__file__))
@@ -161,8 +162,8 @@ def conv3d_ucf11(train_reader, test_reader, max_epochs=30):
     num_output_classes = train_reader.label_count
 
     # Input variables denoting the features and label data
-    input_var = input_variable((num_channels, sequence_length, image_height, image_width), np.float32)
-    label_var = input_variable(num_output_classes, np.float32)
+    input_var = input((num_channels, sequence_length, image_height, image_width), np.float32)
+    label_var = input(num_output_classes, np.float32)
 
     # Instantiate simple 3D Convolution network inspired by VGG network 
     # and http://vlg.cs.dartmouth.edu/c3d/c3d_video.pdf
@@ -197,11 +198,11 @@ def conv3d_ucf11(train_reader, test_reader, max_epochs=30):
     mm_schedule            = momentum_as_time_constant_schedule([momentum_time_constant], epoch_size=epoch_size)
 
     # Instantiate the trainer object to drive the model training
-    learner     = momentum_sgd(z.parameters, lr_schedule, mm_schedule, True)
-    trainer     = Trainer(z, (ce, pe), learner)
+    learner = momentum_sgd(z.parameters, lr_schedule, mm_schedule, True)
+    progress_printer = ProgressPrinter(tag='Training', num_epochs=max_epochs)
+    trainer = Trainer(z, (ce, pe), learner, progress_printer)
 
     log_number_of_parameters(z) ; print()
-    progress_printer = ProgressPrinter(tag='Training', num_epochs=max_epochs)
 
     # Get minibatches of images to train with and perform model training
     for epoch in range(max_epochs):       # loop over epochs
@@ -211,8 +212,7 @@ def conv3d_ucf11(train_reader, test_reader, max_epochs=30):
             videos, labels, current_minibatch = train_reader.next_minibatch(minibatch_size)
             trainer.train_minibatch({input_var : videos, label_var : labels})
 
-            progress_printer.update_with_trainer(trainer, with_metric=True) # log progress
-        progress_printer.epoch_summary(with_metric=True)
+        trainer.summarize_training_progress()
     
     # Test data for trained model
     epoch_size     = 332

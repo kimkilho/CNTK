@@ -127,6 +127,11 @@ namespace Microsoft { namespace MSR { namespace CNTK {
     s_isSyncEnabled = true;
 }
 
+/*static*/ bool SyncGuard::IsSyncEnabled() 
+{
+    return s_isSyncEnabled; 
+}
+
 SyncGuard::SyncGuard(bool forceSync /*= false*/)
     : m_forceSync(forceSync)
 {
@@ -360,7 +365,7 @@ size_t GPUMatrix<ElemType>::CopyToArray(ElemType*& arrayCopyTo, size_t& currentA
     return numElements;
 }
 
-template <typename ElemType>
+template <class ElemType>
 void GPUMatrix<ElemType>::CopySection(size_t numRows, size_t numCols, ElemType* dst, size_t colStride) const
 {
     CUBLAS_CALL(cublasGetMatrix((int) numRows, (int) numCols, sizeof(ElemType),
@@ -381,6 +386,13 @@ void GPUMatrix<ElemType>::ChangeDeviceTo(DEVICEID_TYPE to_id)
     // check to make sure we have something to copy (on init we often have zero sized allocations)
     if (GetSizeAllocated() > 0)
     {
+#ifdef WIN32
+        // IOMMU DMAR needs to be disabled for CUDA P2P, otherwise it will silently hang.
+        // Unfortunately, cudaDeviceCanAccessPeer returns true irrespective of the IOMMU settings.
+        // More details: https://bugzilla.kernel.org/show_bug.cgi?id=188271
+        // http://docs.nvidia.com/cuda/gpudirect-rdma/#supported-systems
+        // TODO: enable UVA p2p access once this is fixed.
+
         // first try peer access
         int canAccessPeer = false;
         CUDA_CALL(cudaDeviceCanAccessPeer(&canAccessPeer, to_id, GetComputeDeviceId()));
@@ -394,6 +406,7 @@ void GPUMatrix<ElemType>::ChangeDeviceTo(DEVICEID_TYPE to_id)
             CUDA_CALL(cudaMemcpyPeer(d_dst, to_id, Data(), GetComputeDeviceId(), sizeof(ElemType) * m_numRows * m_numCols));
         }
         else
+#endif
         {
             // peer access didn't work, just copy normal
             // make this more efficient by keeping some buffers available for each copy
@@ -1119,18 +1132,18 @@ void GPUMatrix<ElemType>::SetValue(const ElemType* d_v) // d_v is pointer to the
 }
 
 template <class ElemType>
-void GPUMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val)
+void GPUMatrix<ElemType>::MaskColumnsValue(const GPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry)
 {
-    if (GetNumCols() != columnsMask.GetNumCols())
-        RuntimeError("Matrix and column mask must have equal number of columns");
+    if (GetNumCols() != (columnsMask.GetNumCols() * numColsPerMaskEntry))
+        RuntimeError("Matrix number of columns must equal 'number of columns in column mask * numColsPerMaskEntry'.");
 
     if (GetComputeDeviceId() != columnsMask.GetComputeDeviceId())
         RuntimeError("Matrix and column mask must be on the same device");
 
-    int blocksPerGrid = (int) GetNumCols();
+    int blocksPerGrid = (int)columnsMask.GetNumCols();
     PrepareDevice();
     SyncGuard syncGuard;
-    _maskColumnsValue<ElemType><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, t_stream>>>(Data(), columnsMask.Data(), (CUDA_LONG) GetNumCols(), (CUDA_LONG) GetNumRows(), val);
+    _maskColumnsValue<ElemType><<<blocksPerGrid, GridDim::maxThreadsPerBlock, 0, t_stream>>>(Data(), columnsMask.Data(), (CUDA_LONG) GetNumCols(), (CUDA_LONG) GetNumRows(), val, numColsPerMaskEntry);
 }
 
 template <class ElemType>
@@ -1517,6 +1530,24 @@ ElemType GPUMatrix<ElemType>::RmsProp(GPUMatrix<ElemType>& gradients,
         CUBLAS_CALL(cublasDasum(cuHandle, (CUDA_LONG) n, reinterpret_cast<double*>(multipliers), 1, &aveMultiplier));
         return (ElemType) aveMultiplier / n;
     }
+}
+
+template <class ElemType>
+void GPUMatrix<ElemType>::AdaDelta(GPUMatrix<ElemType>& gradients, GPUMatrix<ElemType>& functionValues, ElemType rho, ElemType epsilon)
+{
+    size_t numColsNeeded = 2 * gradients.GetNumCols();
+
+    if (IsEmpty() || (GetNumCols() < numColsNeeded))
+    {
+        RequireSize(gradients.GetNumRows(), numColsNeeded);
+        SetValue(0.0);
+    }
+
+    assert((GetNumRows() == gradients.GetNumRows()) && (GetNumCols() == numColsNeeded));
+
+    size_t n = gradients.GetNumElements();
+    int blocksPerGrid = (n + GridDim::maxThreadsPerBlock - 1) / GridDim::maxThreadsPerBlock;
+    _adadelta<ElemType> << <blocksPerGrid, GridDim::maxThreadsPerBlock >> >(n, gradients.Data(), Data(), Data() + n, functionValues.Data(), rho, epsilon);
 }
 
 template <class ElemType>
@@ -4299,7 +4330,10 @@ GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignCTCScore(const GPUMatrix<ElemTyp
     const std::vector<size_t> & uttFrameNum,
     const std::vector<size_t> & uttPhoneNum,
     const size_t numParallelSequences,
-    const size_t maxFrameNum, const int delayConstraint, const bool isColWise)
+    const size_t maxFrameNum, 
+    const size_t blankTokenId,
+    const int delayConstraint, 
+    const bool isColWise)
 {
     if (isColWise)
     {
@@ -4340,13 +4374,13 @@ GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignCTCScore(const GPUMatrix<ElemTyp
         for (long t = 0; t < maxFrameNum; t++)
         {
             _assignAlphaScore << <block_tail, thread_tail, 0, t_stream >> >(prob.Data(), alpha.Data(), phoneSeq.Data(), phoneBoundary.Data(), gpuUttToChanInd,
-                gpuFrameNum, gpuBeginFrame, gpuPhoneNum, numParallelSequences, uttNum, t, maxPhoneNum, totalPhoneNum, delayConstraint);
+                gpuFrameNum, gpuBeginFrame, gpuPhoneNum, numParallelSequences, uttNum, t, maxPhoneNum, totalPhoneNum, blankTokenId, delayConstraint);
         }
 
         for (long t = maxFrameNum - 1; t >= 0; t--)
         {
             _assignBetaScore << <block_tail, thread_tail, 0, t_stream >> >(prob.Data(), beta.Data(), phoneSeq.Data(), phoneBoundary.Data(), gpuUttToChanInd,
-                gpuFrameNum, gpuBeginFrame, gpuPhoneNum, numParallelSequences, uttNum, t, maxPhoneNum, totalPhoneNum, delayConstraint);
+                gpuFrameNum, gpuBeginFrame, gpuPhoneNum, numParallelSequences, uttNum, t, maxPhoneNum, totalPhoneNum, blankTokenId, delayConstraint);
         }
 
         _assignTotalScore << <uttNum, 1, 0, t_stream >> > (beta.Data(), gpuScores, uttNum, gpuUttToChanInd, gpuBeginFrame, numParallelSequences, maxPhoneNum);

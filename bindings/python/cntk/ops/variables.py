@@ -1,8 +1,9 @@
 import numpy as np
 from cntk import cntk_py, NDArrayView
-from cntk.device import DeviceDescriptor
+from cntk.device import DeviceDescriptor, use_default_device
 from ..tensor import TensorOpsMixin
-from ..utils import typemap, sanitize_precision, sanitize_value, \
+from ..utils import Record
+from cntk.internal import typemap, sanitize_precision, sanitize_value, \
         sanitize_shape, sanitize_dtype_cntk
 
 class VariableMixin(object):
@@ -105,6 +106,68 @@ class VariableMixin(object):
         '''
         return super(VariableMixin, self).uid()
 
+    class Type(Record):
+        '''
+        Describes a Variable's type; that is, all arguments to instantiate a Placeholder or Input.
+        These are meant to be passed to update_signature.
+        All are optional, meaning unspecified.
+        '''
+        def __init__(self, shape=None, dtype=None, needs_gradient=None, is_sparse=None, dynamic_axes=None):
+            r = dict()
+            if shape is not None:
+                r['shape'] = shape
+            if dtype is not None:
+                r['dtype'] = dtype
+            if needs_gradient is not None:
+                r['needs_gradient'] = needs_gradient
+            if is_sparse is not None:
+                r['is_sparse'] = is_sparse
+            if dynamic_axes is not None:
+                r['dynamic_axes'] = dynamic_axes
+            super(Variable.Type, self).__init__(**r)
+
+        def __str__(self):
+            '''
+            Stringifies the Type record back to Python 3 syntax per layers.typing.
+            '''
+            # base type
+            unknown_shape = (-2,)
+            shape     = getattr(self, 'shape', unknown_shape)
+            is_sparse = getattr(self, 'is_sparse', False)
+            axes      = getattr(self, 'dynamic_axes', ())
+            has_axes = len(axes) > 0 # it's a tuple of Axis
+            if is_sparse and not has_axes:
+                raise TypeError('Type: cannot be sparse and not have an axis')
+            if shape == unknown_shape:  #.is_unknown():  # TODO: how to do this right?
+                s = 'tensor'
+            elif shape == ():
+                s = 'float'
+            else:
+                s = 'Tensor[' + ','.join(str(dim) for dim in shape) + ']'
+                if is_sparse:
+                    s = "Sparse" + s
+                elif not has_axes:
+                    s = "Parameter" + s
+            # axis
+            if has_axes:
+                for axis in reversed(axes):
+                    if axis.name == 'defaultBatchAxis':  # axis == Axis.default_batch_axis():  --TODO: how to do this right?
+                        continue
+                    if axis.name == 'defaultDynamicAxis' or axis.name == 'staticAxis_2147483645': # TODO: how to do this right?
+                        t = 'Sequence'
+                    else:
+                        t = 'SequenceOver[' + axis.name + ']'
+                    s = t + '[' + s + ']'
+            # We do not return dtype or needs_gradient. dtype is mostly redundant, and needs_gradient is not really part of the type.
+            return s
+
+    @property
+    def type(self):
+        '''
+        The complete type of the data represented by this Variable as a single Variable.Type instance.
+        '''
+        return Variable.Type(shape=self.shape, dtype=self.dtype, needs_gradient=self.needs_gradient, is_sparse=self.is_sparse, dynamic_axes=self.dynamic_axes)
+
 
 
 class Variable(VariableMixin, TensorOpsMixin, cntk_py.Variable):
@@ -177,8 +240,15 @@ class Parameter(VariableMixin, TensorOpsMixin, cntk_py.Parameter):
     '''
     def __init__(self, shape=None, init=None, dtype=None,
                  device=None, name=''):
+        if not device:
+            device = use_default_device()
 
-        if dtype is None:
+        if dtype is not None:
+            if isinstance(init, np.ndarray) and dtype != init.dtype:
+                init = np.array(init, dtype=dtype)
+        else:
+            if np.isscalar(init) and not shape:
+                shape = ()
             if isinstance(init, np.ndarray):
                 dtype = init.dtype
             else:
@@ -230,14 +300,20 @@ class Constant(VariableMixin, TensorOpsMixin, cntk_py.Constant):
     '''
     def __init__(self, value=None, shape=None, dtype=None, device=None, name=''):
 
-        if dtype is None:
+        if not device:
+            device = use_default_device()
+
+        if (np.isscalar(value) or isinstance(value, np.ndarray)) and not shape:
+            shape = ()
+
+        if dtype is not None:
+            if isinstance(value, np.ndarray) and dtype != value.dtype:
+                value = np.array(value, dtype=dtype)
+        else:
             if isinstance(value, np.ndarray):
                 dtype = value.dtype
             else:
                 dtype = np.float32
-
-        if device is None:
-            device = DeviceDescriptor.use_default_device()
 
         if np.isscalar(value):
             super(Constant, self).__init__(sanitize_shape(shape),

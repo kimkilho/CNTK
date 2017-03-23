@@ -89,7 +89,7 @@ public:
     void SetValue(const CPUSparseMatrix<ElemType>& /*val*/);
     //void SetValue(const GPUSparseMatrix<ElemType>& /*val*/);
 
-    void MaskColumnsValue(const CPUMatrix<char>& columnsMask, ElemType val);
+    void MaskColumnsValue(const CPUMatrix<char>& columnsMask, ElemType val, size_t numColsPerMaskEntry);
 
     CPUSparseMatrix<ElemType>& DoGatherColumnsOf(ElemType beta, const CPUMatrix<ElemType>& idx, const CPUSparseMatrix<ElemType>& a, ElemType alpha);
     CPUSparseMatrix<ElemType>& DoScatterColumnsOf(ElemType beta, const CPUMatrix<ElemType>& idx, const CPUSparseMatrix<ElemType>& a, ElemType alpha);
@@ -171,7 +171,11 @@ public:
     // Sparse matrix RequireSize is similar to dense matrix RequireSize in that it will only allocate the minimum amount of storage requried to successfully create the matrix.
     // This is required because some formats (e.g., SparseCSC) require the SecondaryIndexLocation to have valid data in order to compute m_nz. Otherwise this method would not
     // update the storage at all.
-    void RequireSize(const size_t numRows, const size_t numCols, const MatrixFormat format, const bool growOnly = true);
+    void RequireSize(const size_t numRows, const size_t numCols, const size_t numNZElemToReserve, const MatrixFormat format, const bool growOnly = true);
+    void RequireSize(const size_t numRows, const size_t numCols, const MatrixFormat format, const bool growOnly = true)
+    {
+        return RequireSize(numRows, numCols, 0, format, growOnly);
+    }
     // Allows RequireSize to be called without modifying the MatrixFormat.
     void RequireSize(const size_t numRows, const size_t numCols, const bool growOnly = true);
     // Resizes the dimensions of the underlying sparse matrix object. Since the caller may have a hint for m_nz, we allow that to be passed, but this is terrible design. In the
@@ -221,6 +225,7 @@ public:
 public:
     void NormalGrad(CPUMatrix<ElemType>& c, const ElemType momentum, bool unitGainMomentum = true);
     ElemType Adagrad(CPUMatrix<ElemType>& c, const bool needAveMultiplier);
+    void AdaDelta(CPUMatrix<ElemType>& c, CPUMatrix<ElemType>& functionValues, ElemType rho, ElemType epsilon);
 
 public:
     CPUSparseMatrix<ElemType>& InplaceTruncateTop(const ElemType threshold);

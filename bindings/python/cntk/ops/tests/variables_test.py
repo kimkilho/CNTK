@@ -9,7 +9,7 @@ Unit tests for Variable and its descendents.
 """
 
 from ..variables import *
-from .. import times, placeholder_variable, constant, plus, input_variable
+from .. import times, placeholder, constant, plus, input, alias
 import numpy as np
 
 import pytest
@@ -74,12 +74,12 @@ def test_constant():
     assert np.allclose(c.value, val)
 
 def test_placeholder():
-    p1 = placeholder_variable(shape=(1,2))
-    p2 = placeholder_variable(shape=(2,1))
+    p1 = placeholder(shape=(1,2))
+    p2 = placeholder(shape=(2,1))
     op = times(p1, p2)
 
-    p1 = placeholder_variable(shape=(1,2))
-    p2 = placeholder_variable(shape=(2,1))
+    p1 = placeholder(shape=(1,2))
+    p2 = placeholder(shape=(2,1))
     op = times(p1, [[1],[2]])
 
 def test_constant_shape_inf():
@@ -90,16 +90,34 @@ def test_constant_shape_inf():
         c.value
 
 def test_convert_to_variable_dtype():
-    assert input_variable(1).dtype == np.float32
+    assert input(1).dtype == np.float32
 
     data = np.arange(1, dtype=np.int32)
-    result = (input_variable(1)+2).eval([data])
+    result = (input(1)+2).eval([data])
     assert result==[[[2]]]
     assert result.dtype == np.float32
 
     data = np.arange(1., dtype=np.float64)
-    (input_variable(1)+2).eval([data])
-    result = (input_variable(1)+2).eval([data])
+    (input(1)+2).eval([data])
+    result = (input(1)+2).eval([data])
     assert result==[[[2]]]
     assert result.dtype == np.float32
 
+def test_getitem():
+    x = input(5)
+    y = x+0
+    f = y[3]
+    r = f.eval([np.array([[1, 2, 3, 4, 5]])])
+    assert np.allclose(r, [[[4]]])
+    f = y[2:4:1]
+    r = f.eval([np.array([[1, 2, 3, 4, 5]])])
+    assert np.allclose(r, [[[3,4]]])
+    f = y[2::]
+    r = f.eval([np.array([[1, 2, 3, 4, 5]])])
+    assert np.allclose(r, [[[3,4,5]]])
+    f = y[:3]
+    r = f.eval([np.array([[1, 2, 3, 4, 5]])])
+    assert np.allclose(r, [[[1,2,3]]])
+    with pytest.raises(ValueError):
+        f = y[1:4:2]
+        r = f.eval([np.array([[1, 2, 3, 4, 5]])])
