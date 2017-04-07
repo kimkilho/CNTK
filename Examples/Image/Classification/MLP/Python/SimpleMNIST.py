@@ -9,7 +9,7 @@ import numpy as np
 import sys
 import os
 from cntk.train import Trainer, minibatch_size_schedule 
-from cntk.io import MinibatchSource, CTFDeserializer, StreamDef, StreamDefs, INFINITELY_REPEAT, FULL_DATA_SWEEP
+from cntk.io import MinibatchSource, CTFDeserializer, StreamDef, StreamDefs, INFINITELY_REPEAT
 from cntk.device import cpu, try_set_default_device
 from cntk.learners import adadelta, learning_rate_schedule, UnitType
 from cntk.ops import input, relu, element_times, constant
@@ -33,7 +33,7 @@ def create_reader(path, is_training, input_dim, label_dim):
     return MinibatchSource(CTFDeserializer(path, StreamDefs(
         features  = StreamDef(field='features', shape=input_dim, is_sparse=False),
         labels    = StreamDef(field='labels',   shape=label_dim, is_sparse=False)
-    )), randomize=is_training, epoch_size = INFINITELY_REPEAT if is_training else FULL_DATA_SWEEP)
+    )), randomize=is_training, max_sweeps = INFINITELY_REPEAT if is_training else 1)
 
 
 # Creates and trains a feedforward classification model for MNIST images
@@ -90,7 +90,7 @@ def simple_mnist(tensorboard_logdir=None):
         trainer=trainer,
         mb_source = reader_train,
         mb_size = minibatch_size,
-        var_to_stream = input_map,
+        model_inputs_to_streams = input_map,
         max_samples = num_samples_per_sweep * num_sweeps_to_train_with,
         progress_frequency=num_samples_per_sweep
     ).train()

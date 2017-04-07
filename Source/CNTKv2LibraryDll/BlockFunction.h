@@ -8,6 +8,8 @@
 #include "stdafx.h"
 #include "CNTKLibrary.h"
 #include "PrimitiveFunction.h"
+#include "Utils.h"
+#include "Variable.h"
 
 namespace CNTK
 {
@@ -160,7 +162,7 @@ namespace CNTK
             auto compositeOutputs = m_composite->RawOutputs();
             for (auto compositeOutput : compositeOutputs)
             {
-                auto output = OutputVariable(compositeOutput.Shape(), compositeOutput.GetDataType(), compositeOutput.DynamicAxes(), Name());
+                auto output = OutputVariable(compositeOutput.Shape(), compositeOutput.GetDataType(), compositeOutput.DynamicAxes(), compositeOutput.NeedsGradient(), Name());
                 output.m_dataFields->m_blockFunctionVariableMapping = compositeOutput;
 
                 outputs.push_back(output);

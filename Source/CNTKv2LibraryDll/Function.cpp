@@ -8,6 +8,7 @@
 #include "PrimitiveFunction.h"
 #include "CompositeFunction.h"
 #include "BlockFunction.h"
+#include "Utils.h"
 
 using namespace Microsoft::MSR::CNTK;
 
@@ -297,6 +298,12 @@ namespace CNTK
                 currentOutputVar.m_dataFields->m_shape = newOutputVar.Shape();
             }
 
+            if (!newOutputVar.Shape().IsUnknown() && (currentOutputVar.NeedsGradient() != newOutputVar.NeedsGradient()))
+            {
+                updated = true;
+                currentOutputVar.m_dataFields->m_needsGradient = newOutputVar.NeedsGradient();
+            }
+
             if ((currentOutputVar.GetDataType() == DataType::Unknown) && (currentOutputVar.GetDataType() != newOutputVar.GetDataType()))
             {
                 updated = true;
@@ -311,9 +318,10 @@ namespace CNTK
 
             if ((!newOutputVar.Shape().IsUnknown() && (currentOutputVar.Shape() != newOutputVar.Shape())) ||
                 ((newOutputVar.GetDataType() != DataType::Unknown) && (currentOutputVar.GetDataType() != newOutputVar.GetDataType())) ||
-                ((newOutputVar.DynamicAxes() != Axis::UnknownDynamicAxes()) && (currentOutputVar.DynamicAxes() != newOutputVar.DynamicAxes())))
+                ((newOutputVar.DynamicAxes() != Axis::UnknownDynamicAxes()) && (currentOutputVar.DynamicAxes() != newOutputVar.DynamicAxes())) ||
+                (!newOutputVar.Shape().IsUnknown() && (currentOutputVar.NeedsGradient() != newOutputVar.NeedsGradient())))
             {
-                InvalidArgument("New output Variable Shape, DataType or Dynamic axes after replaced placeholders does not match previous output Variable, for the Recurrent Function.\n"
+                InvalidArgument("New output Variable Shape, DataType, NeedsGradient, Dynamic axes after replaced placeholders does not match previous output Variable, for the Recurrent Function.\n"
                                 "New = %S\n"
                                 "Previous = %S\n",
                                 newOutputVar.AsString().c_str(), currentOutputVar.AsString().c_str());
@@ -323,6 +331,7 @@ namespace CNTK
         {
             currentOutputVar.m_dataFields->m_shape = newOutputVar.Shape();
             currentOutputVar.m_dataFields->m_dataType = newOutputVar.GetDataType();
+            currentOutputVar.m_dataFields->m_needsGradient = newOutputVar.NeedsGradient();
             currentOutputVar.m_dataFields->m_dynamicAxes = newOutputVar.DynamicAxes();
             updated = true;
         }
@@ -1029,28 +1038,46 @@ namespace CNTK
         LogicError("Slice: Invalid axis argument provided. Slice along the dynamic batch axis is currently unsupported. To slice a sequence along its ordered dynamic axis use Sequence::Slice.");
     }
 
-    FunctionPtr RandomSample(const Variable& operand, size_t numSamples, bool allowDuplicates, const std::wstring& name)
+    FunctionPtr RandomSample(const Variable& operand, size_t numSamples, bool allowDuplicates, unsigned long seed, const std::wstring& name)
     {
         auto additionalProperties = Dictionary();
         additionalProperties[PrimitiveFunction::AttributeNameNumSamples] = numSamples;
         additionalProperties[PrimitiveFunction::AttributeNameAllowDuplicates] = allowDuplicates;
+
+        if (seed == SentinelValueForAutoSelectRandomSeed)
+            seed = Internal::GenerateRandomSeed();
+        
+        additionalProperties[PrimitiveFunction::AttributeNameRngSeed] = size_t(seed);
+        additionalProperties[PrimitiveFunction::AttributeNameRngOffset] = size_t(0);
 
         return UnaryOp(PrimitiveOpType::RandomSample, operand, std::move(additionalProperties), name);
     }
 
-    FunctionPtr RandomSampleInclusionFrequency(const Variable& operand, size_t numSamples, bool allowDuplicates, const std::wstring& name)
+    FunctionPtr RandomSampleInclusionFrequency(const Variable& operand, size_t numSamples, bool allowDuplicates, unsigned long seed, const std::wstring& name)
     {
         auto additionalProperties = Dictionary();
         additionalProperties[PrimitiveFunction::AttributeNameNumSamples] = numSamples;
         additionalProperties[PrimitiveFunction::AttributeNameAllowDuplicates] = allowDuplicates;
 
+        if (seed == SentinelValueForAutoSelectRandomSeed)
+            seed = Internal::GenerateRandomSeed();
+
+        additionalProperties[PrimitiveFunction::AttributeNameRngSeed] = size_t(seed);
+        additionalProperties[PrimitiveFunction::AttributeNameRngOffset] = size_t(0);
+
         return UnaryOp(PrimitiveOpType::RandomSampleInclusionFrequency, operand, std::move(additionalProperties), name);
     }
 
-    FunctionPtr Dropout(const Variable& operand, double dropoutRate, const std::wstring& name)
+    FunctionPtr Dropout(const Variable& operand, double dropoutRate, unsigned long seed, const std::wstring& name)
     {
         auto additionalProperties = Dictionary();
         additionalProperties[PrimitiveFunction::AttributeNameDropoutRate] = dropoutRate;
+
+        if (seed == SentinelValueForAutoSelectRandomSeed)
+            seed = Internal::GenerateRandomSeed();
+        
+        additionalProperties[PrimitiveFunction::AttributeNameRngSeed] = size_t(seed);
+        additionalProperties[PrimitiveFunction::AttributeNameRngOffset] = size_t(0);
 
         return UnaryOp(PrimitiveOpType::Dropout, operand, std::move(additionalProperties), name);
     }
@@ -1279,6 +1306,15 @@ namespace CNTK
         return BinaryOp(PrimitiveOpType::FutureValue, operand, initialState, std::move(additionalProperties), name);
     }
 
+    FunctionPtr OneHotOp(const Variable& operand, size_t numClass, bool outputSparse, Axis& axis, const std::wstring& name)
+    {
+        auto additionalProperties = Dictionary();
+        additionalProperties[PrimitiveFunction::AttributeNameNumClass] = numClass;
+        additionalProperties[PrimitiveFunction::AttributeNameOneHotOutputSparse] = outputSparse;
+        additionalProperties[PrimitiveFunction::AttributeNameOneHotAxis] = axis;
+        return UnaryOp(PrimitiveOpType::OneHot, operand, std::move(additionalProperties), name);
+    }
+
     FunctionPtr ReduceSum(const Variable& operand, const std::wstring& name)
     {
         return UnaryOp(PrimitiveOpType::SumAll, operand, Dictionary(), name);
@@ -1314,13 +1350,12 @@ namespace CNTK
         return Internal::ReduceElements(operand, PrimitiveFunction::InternalProdReductionOpName, axis, name);
     }
 
-    FunctionPtr PerDimMeanVarianceNormalize(const Variable& operand, const NDArrayViewPtr& mean, const NDArrayViewPtr& invStdDev, const std::wstring& name)
+    FunctionPtr PerDimMeanVarianceNormalize(const Variable& operand, const Variable& mean, const Variable& invStdDev, const std::wstring& name)
     {
         auto operandPlaceholder = PlaceholderVariable(L"operand");
-        Constant meanVar(mean);
-        Constant invStdDevVar(invStdDev);
-
-        return AsBlock(std::move(ElementTimes(Minus(operandPlaceholder, meanVar), invStdDevVar)), { { operandPlaceholder, operand } }, L"PerDimMeanVarianceNormalize", name);
+        auto meanPlaceholder = PlaceholderVariable(L"mean");
+        auto invStdDevPlaceholder = PlaceholderVariable(L"invStdDev");
+        return AsBlock(std::move(ElementTimes(Minus(operandPlaceholder, meanPlaceholder), invStdDevPlaceholder)), { { operandPlaceholder, operand }, { meanPlaceholder, mean }, { invStdDevPlaceholder, invStdDev } }, L"PerDimMeanVarianceNormalize", name);
     }
 
     FunctionPtr Convolution(const Variable& convolutionMap,
@@ -1328,8 +1363,6 @@ namespace CNTK
         const NDShape& strides,
         const std::vector<bool>& sharing,
         const std::vector<bool>& autoPadding,
-        const NDShape& lowerPad,
-        const NDShape& upperPad,
         size_t maxTempMemSizeInSamples,
         const std::wstring& name)
     {
@@ -1338,8 +1371,6 @@ namespace CNTK
             strides,
             sharing,
             autoPadding,
-            lowerPad,
-            upperPad,
             false,
             { 0 },
             maxTempMemSizeInSamples,
@@ -1351,8 +1382,6 @@ namespace CNTK
         const NDShape& strides,
         const std::vector<bool>& sharing,
         const std::vector<bool>& autoPadding,
-        const NDShape& lowerPad,
-        const NDShape& upperPad,
         const NDShape& outputShape,
         size_t maxTempMemSizeInSamples,
         const std::wstring& name)
@@ -1362,8 +1391,6 @@ namespace CNTK
             strides,
             sharing,
             autoPadding,
-            lowerPad,
-            upperPad,
             true,
             outputShape,
             maxTempMemSizeInSamples,
@@ -1382,8 +1409,6 @@ namespace CNTK
                         const NDShape& poolingWindowShape,
                         const NDShape& strides,
                         const std::vector<bool>& autoPadding,
-                        const NDShape& lowerPad,
-                        const NDShape& upperPad,
                         const bool ceilOutDim,
                         const bool includePad,
                         const std::wstring& name)
@@ -1393,8 +1418,8 @@ namespace CNTK
         additionalProperties[PrimitiveFunction::AttributeNamePoolingWindowShape] = poolingWindowShape;
         additionalProperties[PrimitiveFunction::AttributeNameStrides] = strides;
         additionalProperties[PrimitiveFunction::AttributeNameAutoPadding] = AsDictionaryValueVector(autoPadding);
-        additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = lowerPad;
-        additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = upperPad;
+        additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = NDShape({0});
+        additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = NDShape({0});
         additionalProperties[PrimitiveFunction::AttributeNameCeilOutDim] = ceilOutDim;
         additionalProperties[PrimitiveFunction::AttributeNameIncludePad] = includePad;
 
@@ -1407,8 +1432,6 @@ namespace CNTK
                           const NDShape& poolingWindowShape,
                           const NDShape& strides,
                           const std::vector<bool>& autoPadding,
-                          const NDShape& lowerPad,
-                          const NDShape& upperPad,
                           const std::wstring& name)
     {
         auto additionalProperties = Dictionary();
@@ -1416,8 +1439,8 @@ namespace CNTK
         additionalProperties[PrimitiveFunction::AttributeNameUnpoolingWindowShape] = poolingWindowShape;
         additionalProperties[PrimitiveFunction::AttributeNameStrides] = strides;
         additionalProperties[PrimitiveFunction::AttributeNameAutoPadding] = AsDictionaryValueVector(autoPadding);
-        additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = lowerPad;
-        additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = upperPad;
+        additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = NDShape({0});
+        additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = NDShape({0});
 
         std::vector<Variable> operands = { operand, poolingInput};
         return AsComposite(MakeSharedObject<PrimitiveFunction>(PrimitiveOpType::Unpooling, operands, std::move(additionalProperties), name), name);
@@ -1763,11 +1786,21 @@ namespace CNTK
 
         FunctionPtr Slice(const Variable& operand, const std::vector<Axis>& axis, const std::vector<int>& beginIndex, const std::vector<int>& endIndex, const std::wstring& name)
         {
-            auto additionalProperties = Dictionary();
-            additionalProperties[PrimitiveFunction::AttributeNameAxis] = AsDictionaryValueVector(axis);
-            additionalProperties[PrimitiveFunction::AttributeNameBeginIndex] = AsDictionaryValueVector(beginIndex);
-            additionalProperties[PrimitiveFunction::AttributeNameEndIndex] = AsDictionaryValueVector(endIndex);
+            auto additionalProperties = Dictionary(); 
 
+            assert(axis.size() > 0 && axis.size() == beginIndex.size() && axis.size() == endIndex.size());
+            if (axis.size() == 1)
+            {
+                additionalProperties[PrimitiveFunction::AttributeNameAxis] = axis[0];
+                additionalProperties[PrimitiveFunction::AttributeNameBeginIndex] = beginIndex[0];
+                additionalProperties[PrimitiveFunction::AttributeNameEndIndex] = endIndex[0];
+            }
+            else
+            {
+                additionalProperties[PrimitiveFunction::AttributeNameAxisVec] = AsDictionaryValueVector(axis);
+                additionalProperties[PrimitiveFunction::AttributeNameBeginIndexVec] = AsDictionaryValueVector(beginIndex);
+                additionalProperties[PrimitiveFunction::AttributeNameEndIndexVec] = AsDictionaryValueVector(endIndex);
+            }
             return UnaryOp(PrimitiveOpType::Slice, operand, std::move(additionalProperties), name);
         }
 
@@ -1803,8 +1836,6 @@ namespace CNTK
             const NDShape& strides,
             const std::vector<bool>& sharing,
             const std::vector<bool>& autoPadding,
-            const NDShape& lowerPad,
-            const NDShape& upperPad,
             bool transpose,
             const NDShape& outputShape,
             size_t maxTempMemSizeInSamples,
@@ -1820,8 +1851,8 @@ namespace CNTK
             additionalProperties[PrimitiveFunction::AttributeNameStrides] = strides;
             additionalProperties[PrimitiveFunction::AttributeNameSharing] = AsDictionaryValueVector(sharing);
             additionalProperties[PrimitiveFunction::AttributeNameAutoPadding] = AsDictionaryValueVector(autoPadding);
-            additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = lowerPad;
-            additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = upperPad;
+            additionalProperties[PrimitiveFunction::AttributeNameLowerPad] = NDShape({0});
+            additionalProperties[PrimitiveFunction::AttributeNameUpperPad] = NDShape({0});
             additionalProperties[PrimitiveFunction::AttributeNameTranspose] = transpose;
             additionalProperties[PrimitiveFunction::AttributeNameOutputShape] = outputShape;
             additionalProperties[PrimitiveFunction::AttributeNameMaxTempMemSizeInSamples] = maxTempMemSizeInSamples;

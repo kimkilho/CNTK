@@ -4,8 +4,6 @@
 //
 
 #include "stdafx.h"
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 #include "HTKDataDeserializer.h"
 #include "ConfigHelper.h"
 #include "Basics.h"
@@ -37,16 +35,9 @@ HTKDataDeserializer::HTKDataDeserializer(
 
     m_verbosity = cfg(L"verbosity", 0);
 
-    argvector<ConfigValue> inputs = cfg("input");
-    if (inputs.size() != 1)
-    {
-        InvalidArgument("HTKDataDeserializer supports a single input stream only.");
-    }
-
-    ConfigParameters input = inputs.front();
+    ConfigParameters input = cfg(L"input");
     auto inputName = input.GetMemberIds().front();
     std::wstring precision = cfg(L"precision", L"float");
-
 
     ConfigParameters streamConfig = input(inputName);
 
@@ -118,7 +109,7 @@ void HTKDataDeserializer::InitializeAugmentationWindow(const std::pair<size_t, s
 }
 
 // Initializes chunks based on the configuration and utterance descriptions.
-void HTKDataDeserializer::InitializeChunkDescriptions(const vector<wstring>& paths)
+void HTKDataDeserializer::InitializeChunkDescriptions(const vector<string>& paths)
 {
     // Read utterance descriptions.
     vector<UtteranceDescription> utterances;
@@ -127,7 +118,7 @@ void HTKDataDeserializer::InitializeChunkDescriptions(const vector<wstring>& pat
 
     for (const auto& u : paths)
     {
-        UtteranceDescription description(move(msra::asr::htkfeatreader::parsedpath(u)));
+        UtteranceDescription description(move(msra::asr::htkfeatreader::parsedpath(msra::strfun::utf16(u))));
         size_t numberOfFrames = description.GetNumberOfFrames();
 
         if (m_expandToPrimary && numberOfFrames != 1)
@@ -193,7 +184,7 @@ void HTKDataDeserializer::InitializeChunkDescriptions(const vector<wstring>& pat
 
     fprintf(stderr,
         "HTKDataDeserializer::HTKDataDeserializer: "
-        "selected %" PRIu64 " utterances grouped into %" PRIu64 " chunks, "
+        "selected '%zu' utterances grouped into '%zu' chunks, "
         "average chunk size: %.1f utterances, %.1f frames "
         "(for I/O: %.1f utterances, %.1f frames)\n",
         utterances.size(),
@@ -560,12 +551,15 @@ bool HTKDataDeserializer::GetSequenceDescription(const SequenceDescription& prim
     auto utterance = chunk.GetUtterance(utteranceIndexInsideChunk);
 
     d.m_chunkId = (ChunkIdType)chunkId;
+    d.m_numberOfSamples = m_frameMode ? 1 : (uint32_t)utterance->GetNumberOfFrames();
 
     // TODO: When we move frame mode from deserializer, expanding should go away and be done on the higher level.
     // TODO: Currently for the frame mode the secondary deserializer does not know the size of the full utterance,
     // becase each frame has its own sequence description. So we get the length by the max sample we have seen.
-    if (m_expandToPrimary)
+    if (m_expandToPrimary) // Expansion, the check that all sequences are of length 0 have already been done.
     {
+        assert(utterance->GetNumberOfFrames() == 1);
+
         // Expanding for sequence length/or max seen frame.
         size_t maxLength = max(primary.m_numberOfSamples, (uint32_t)primary.m_key.m_sample + 1);
         if (utterance->GetExpansionLength() < maxLength)
@@ -574,11 +568,20 @@ bool HTKDataDeserializer::GetSequenceDescription(const SequenceDescription& prim
         }
         d.m_indexInChunk = utteranceIndexInsideChunk;
     }
-    else
+    else if (m_frameMode) // Frame mode.
     {
-        d.m_indexInChunk = m_frameMode ? chunk.GetStartFrameIndexInsideChunk(utteranceIndexInsideChunk) + primary.m_key.m_sample : utteranceIndexInsideChunk;
+        d.m_indexInChunk = chunk.GetStartFrameIndexInsideChunk(utteranceIndexInsideChunk) + primary.m_key.m_sample;
+
+        // Check that the sequences are equal in number of frames.
+        if (primary.m_key.m_sample >= utterance->GetNumberOfFrames())
+            RuntimeError("Sequence with key '%s' has '%d' frame(s), whereas the primary sequence expects at least '%d' frames",
+                m_corpus->IdToKey(primary.m_key.m_sequence).c_str(), (int)utterance->GetNumberOfFrames(), (int)primary.m_key.m_sample + 1);
     }
-    d.m_numberOfSamples = m_frameMode ? 1 : (uint32_t)utterance->GetNumberOfFrames();
+    else // Utterance mode, no expansion.
+    {
+        d.m_indexInChunk = utteranceIndexInsideChunk;
+    }
+
     return true;
 }
 

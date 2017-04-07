@@ -12,13 +12,13 @@ import numpy as np
 import cntk
 import _cntk_py
 
-from cntk.utils import *
+from cntk.logging import *
 from cntk.ops import *
 from cntk.distributed import data_parallel_distributed_learner, Communicator
 from cntk.io import ImageDeserializer, MinibatchSource, StreamDef, StreamDefs, FULL_DATA_SWEEP
 from cntk.layers import Placeholder, Block, Convolution2D, Activation, MaxPooling, Dense, Dropout, default_options, Sequential, For
 from cntk.initializer import normal
-from cntk.training_session import *
+from cntk.train.training_session import *
 
 # default Paths relative to current python file.
 abs_path   = os.path.dirname(os.path.abspath(__file__))
@@ -59,7 +59,7 @@ def create_image_mb_source(map_file, is_training, total_number_of_samples):
             features = StreamDef(field='image', transforms=transforms), # first column in map file is referred to as 'image'
             labels   = StreamDef(field='label', shape=num_classes))),   # and second as 'label'
         randomize = is_training, 
-        epoch_size=total_number_of_samples,
+        max_samples=total_number_of_samples,
         multithreaded_deserializer = True)
 
 # Create the network.
@@ -162,7 +162,7 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
     # Train all minibatches 
     training_session(
         trainer=trainer, mb_source = train_source, 
-        var_to_stream = input_map, 
+        model_inputs_to_streams = input_map, 
         mb_size = minibatch_size,
         progress_frequency=epoch_size,
         checkpoint_config = CheckpointConfig(filename = os.path.join(model_path, model_name), restore=restore),

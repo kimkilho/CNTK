@@ -13,6 +13,8 @@ import cntk
 import _cntk_py
 import cntk.io.transforms as xforms
 from cntk.train.training_session import *
+from cntk.logging import *
+from cntk.debugging import *
 
 # default Paths relative to current python file.
 abs_path   = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +50,7 @@ def create_image_mb_source(map_file, mean_file, train, total_number_of_samples):
             features = cntk.io.StreamDef(field='image', transforms=transforms), # first column in map file is referred to as 'image'
             labels   = cntk.io.StreamDef(field='label', shape=num_classes))),   # and second as 'label'
         randomize=train,
-        epoch_size=total_number_of_samples,
+        max_samples=total_number_of_samples,
         multithreaded_deserializer = True)
 
 # Create the network.
@@ -126,11 +128,11 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
 
     # Train all minibatches
     if profiling:
-        cntk.start_profiler(sync_gpu=True)
+        start_profiler(sync_gpu=True)
 
     training_session(
         trainer=trainer, mb_source = train_source,
-        var_to_stream = input_map, 
+        model_inputs_to_streams = input_map, 
         mb_size = minibatch_size,
         progress_frequency=epoch_size,
         checkpoint_config = CheckpointConfig(frequency = epoch_size,
@@ -140,7 +142,7 @@ def train_and_test(network, trainer, train_source, test_source, minibatch_size, 
     ).train()
 
     if profiling:
-        cntk.stop_profiler()
+        stop_profiler()
 
 # Train and evaluate the network.
 def convnet_cifar10_dataaug(train_data, test_data, mean_data, minibatch_size=64, epoch_size=50000, num_quantization_bits=32,
@@ -150,13 +152,18 @@ def convnet_cifar10_dataaug(train_data, test_data, mean_data, minibatch_size=64,
 
     network = create_conv_network()
 
+    distributed_sync_report_freq = None
+    if block_size is not None:
+        distributed_sync_report_freq = 1
+
     progress_writers = [cntk.logging.ProgressPrinter(
         freq=num_mbs_per_log,
         tag='Training',
         log_to_file=log_to_file,
         rank=cntk.train.distributed.Communicator.rank(),
         gen_heartbeat=gen_heartbeat,
-        num_epochs=max_epochs)]
+        num_epochs=max_epochs,
+        distributed_freq=distributed_sync_report_freq)]
 
     if tensorboard_logdir is not None:
         progress_writers.append(cntk.logging.TensorBoardProgressWriter(
