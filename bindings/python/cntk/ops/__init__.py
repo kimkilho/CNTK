@@ -9,7 +9,7 @@ import numpy as np
 import numbers
 from numbers import Number
 from . import sequence
-from .functions import CloneMethod, Function, load_model
+from .functions import CloneMethod, Function, load_model, register_native_user_function, native_user_function
 from ..variables import Variable, Parameter, Constant
 from cntk.internal import sanitize_input, sanitize_shape, sanitize_axis, sanitize_dynamic_axes, sanitize_axis_list, typemap, sanitize_pooling_args, sanitize_convolution_args
 from cntk.internal.utils import get_data_type
@@ -74,7 +74,7 @@ def as_block(composite, block_arguments_map, block_op_name, block_instance_name=
     Args:
         composite: The composite Function that the block encapsulates
         block_arguments_map: A list of tuples, mapping from block's underlying composite's arguments to
-        actual variables they are connected to
+         actual variables they are connected to
         block_op_name: Name of the op that the block represents
         block_instance_name (str, optional): the name of the block Function in the network
 
@@ -122,15 +122,40 @@ def alias(x, name=''):
     from cntk.cntk_py import alias
     x = sanitize_input(x)
     return alias(x, name)
+
+@typemap
+def reconcile_dynamic_axes(x, dynamic_axes_as, name=''):
+    '''
+     Create a new Function instance which reconciles the dynamic axes of the
+     specified tensor operands. The output of the returned Function has the sample
+     layout of the 'x' operand and the dynamic axes of the 'dynamic_axes_as' operand.
+     This operator also performs a runtime check to ensure that the dynamic axes layouts
+     of the 2 operands indeed match.
+
+    Args:
+        x: The Function/Variable, whose dynamic axes are to be reconciled
+        dynamic_axes_as: The Function/Variable, to whose dynamic axes the 
+            operand 'x''s dynamic axes are reconciled to.
+        name (str, optional): the name of the reconcile_dynamic_axes Function in the network
+
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+    from cntk.cntk_py import reconcile_dynamic_axes
+    x = sanitize_input(x)
+    dynamic_axes_as = sanitize_input(dynamic_axes_as)
+    return reconcile_dynamic_axes(x, dynamic_axes_as, name)
+
 @typemap
 def labels_to_graph(labels, name=''):
     '''
     Conversion node from labels to graph. Typically used as an input to ForwardBackward node. 
     This node's objective is to transform input labels into a graph representing exact forward-backward criterion.
+
     Example:
-        num_classes = 2
-        labels = cntk.input((num_classes))
-        graph = cntk.labels_to_graph(labels)
+        >>> num_classes = 2
+        >>> labels = C.input((num_classes))
+        >>> graph = C.labels_to_graph(labels)
 
     Args:
         labels: input training labels
@@ -722,6 +747,32 @@ def minus(left, right, name=''):
     right = sanitize_input(right, dtype)
     return minus(left, right, name)
 
+@typemap
+def pow(base, exponent, name=''):
+    '''
+    The output of this operation is base raised to the power of exponent. It supports broadcasting.
+
+    Example:
+        >>> C.pow([1, 2, 3], [3, 2, 1]).eval()
+        array([ 1.,  4.,  3.], dtype=float32)
+
+        >>> C.pow([[0.5,2],[4,1]], -2).eval()
+        array([[ 4.    ,  0.25  ],
+               [ 0.0625,  1.    ]], dtype=float32)
+
+    Args:
+        base: base tensor
+        exponent: exponent tensor
+        name (str, optional): the name of the Function instance in the network
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+
+    from cntk.cntk_py import pow
+    dtype = get_data_type(base, exponent)
+    base = sanitize_input(base, dtype)
+    exponent = sanitize_input(exponent, dtype)
+    return pow(base, exponent, name)
 
 @associative_multi_arg
 @typemap
@@ -1509,7 +1560,7 @@ def sqrt(x, name=''):
 
     Note:
         CNTK returns zero for sqrt of negative nubmers, this will be changed to
-        retrun NaN
+        return NaN
     '''
     from cntk.cntk_py import sqrt
     x = sanitize_input(x)
@@ -1700,27 +1751,9 @@ def past_value(x, initial_state=None, time_step=1, name=''):
     or input data (which has a batch dimension, as needed for sequence-to-sequence models).
 
     Example:
-        >>> # create example input: one sequence with 4 tensors of shape (3, 2)
-        >>> from cntk.layers.typing import Tensor, Sequence
-        >>> x = input(**Sequence[Tensor[3,2]])
+        >>> x = C.sequence.input(shape=(3,2))
+        >>> # Create one sequence with 4 tensors of shape (3, 2)
         >>> x0 = np.reshape(np.arange(24,dtype=np.float32),(1,4,3,2))
-        >>> x0
-        array([[[[  0.,   1.],
-                 [  2.,   3.],
-                 [  4.,   5.]],
-        <BLANKLINE>
-                [[  6.,   7.],
-                 [  8.,   9.],
-                 [ 10.,  11.]],
-        <BLANKLINE>
-                [[ 12.,  13.],
-                 [ 14.,  15.],
-                 [ 16.,  17.]],
-        <BLANKLINE>
-                [[ 18.,  19.],
-                 [ 20.,  21.],
-                 [ 22.,  23.]]]], dtype=float32)
-
         >>> # this demonstrates how past_value shifts the sequence by one, padding with initial_state
         >>> y = C.past_value(x) # initial_state is 0 by default
         >>> y.eval({x:x0})
@@ -1741,7 +1774,7 @@ def past_value(x, initial_state=None, time_step=1, name=''):
                  [ 16.,  17.]]], dtype=float32)]
 
         >>> # here, we pass a the initial_state as input data (e.g. sequence-to-sequence)
-        >>> s = input(**Tensor[3,2])  # not a Sequence[], e.g. a final encoder hidden state
+        >>> s = C.input(shape=(3,2))  # not a sequence, e.g. a final encoder hidden state
         >>> s0 = np.reshape(np.arange(6,dtype=np.float32)/2,(1,1,3,2))
         >>> s0
         array([[[[ 0. ,  0.5],
@@ -2086,8 +2119,9 @@ def reduce_sum(x, axis=None, name=''):
     Computes the sum of the input tensor's elements across one axis. If the axis parameter
     is not specified then the sum will be computed over all static axes, which is 
     equivalent with specifying ``axis=Axis.all_static_axes()``. If 
-    ``axis=Axis.all_axes()``, the output is a scalar which is the sum of all the 
-    elements in the minibatch.
+    ``axis=Axis.all_axes()`` is specified, then the output is a scalar which is the sum of all the 
+    elements in the minibatch. And if ``axis=Axis.default_batch_axis()`` is specified, then the reduction
+    will happen across the batch axis (In this case the input must not be a sequence).
 
     Example:
         >>> x = C.sequence.input((2,2))
@@ -2130,6 +2164,12 @@ def reduce_sum(x, axis=None, name=''):
         4.5
         >>> (np.sum(x1)+np.sum(x2))/(x1.size+x2.size)
         4.5
+        >>> # reduce over batch axis
+        >>> xv = C.input((2,2))
+        >>> xd = np.arange(8,dtype=np.float32).reshape(2,2,2)
+        >>> C.reduce_sum(xv,axis=C.Axis.default_batch_axis()).eval({xv:xd})
+        array([[  4.,   6.],
+               [  8.,  10.]], dtype=float32)
 
     Args:
         x: input tensor
@@ -2379,6 +2419,68 @@ def argmin(x, axis=None, name=''):
     axis = sanitize_axis(axis)
     return argmin(x, axis, name)
 
+@typemap
+def to_sequence(x, sequence_lengths=None, sequence_axis_name_prefix='toSequence_', name=''):
+    '''
+    This function converts 'x' to a sequence using the most significant
+    static axis [0] as the sequence axis.
+
+    The sequenceLengths input is optional; if unspecified, all sequences are
+    assumed to be of the same length; i.e. dimensionality of the most significant
+    static axis
+
+    Example:
+        TBA.
+
+    Args:
+        x: the tensor (or its name) which is converted to a sequence
+        sequence_lengths: Optional tensor operand representing the sequence lengths.
+            if unspecified, all sequences are assumed to be of the same length; 
+            i.e. dimensionality of the most significant static axis.
+        sequence_axis_name_prefix (str, optional): prefix of the new sequence axis name.
+        name (str, optional): the name of the Function instance in the network
+
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+
+    from cntk.cntk_py import to_sequence
+
+    x = sanitize_input(x)
+    if sequence_lengths is None:
+        return to_sequence(x, sequence_axis_name_prefix, name)
+    else:
+        sequence_lengths = sanitize_input(sequence_lengths)
+        return to_sequence(x, sequence_lengths, sequence_axis_name_prefix, name)
+
+
+@typemap
+def to_sequence_like(x, dynamic_axes_like, name=''):
+    '''
+    This function converts 'x' to a sequence using the most significant
+    static axis [0] as the sequence axis. The length of the sequences are
+    obtained from the 'dynamic_axes_like' operand.
+
+    Example:
+        TBA.
+
+    Args:
+        x: the tensor (or its name) which is converted to a sequence
+        dynamic_axes_like: Tensor operand used to obtain the lengths of
+            the generated sequences. The dynamic axes of the generated sequence
+            tensor match the dynamic axes of the 'dynamic_axes_like' operand.
+        name (str, optional): the name of the Function instance in the network
+
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+
+    from cntk.cntk_py import to_sequence_like
+
+    x = sanitize_input(x)
+    dynamic_axes_like = sanitize_input(dynamic_axes_like)
+    return to_sequence_like(x, dynamic_axes_like, name)
+
 #######################################################################
 # training ops
 #######################################################################
@@ -2595,7 +2697,7 @@ def input_variable(shape, dtype=np.float32, needs_gradient=False, is_sparse=Fals
         name (str, optional): the name of the Function instance in the network
 
     Returns:
-        :class:`~cntk.ops.variables.Variable`
+        :class:`~cntk.variables.Variable`
     '''
     import warnings
     warnings.warn('This will be removed in future versions. Please use '
@@ -2676,7 +2778,7 @@ def placeholder_variable(shape=None, dynamic_axes=None, name=''):
         name (str, optional): the name of the placeholder variable in the network
 
     Returns:
-        :class:`~cntk.ops.variables.Variable`
+        :class:`~cntk.variables.Variable`
     '''
     import warnings
     warnings.warn('This will be removed in future versions. Please use '
@@ -2785,3 +2887,71 @@ def stop_gradient(input, name=''):
     dtype = get_data_type(input)
     op = sanitize_input(input, dtype)
     return stop_gradient(op, name)
+
+@typemap
+def assign(ref, input, name=''):
+    '''
+    Assign the value in input to ref and return the new value, ref need to be the same layout as input.
+    Both ref and input can't have dynamic axis and broadcast isn't supported for the assign operator.
+    During forward pass, ref will get the new value after the forward or backward pass finish, so that 
+    any part of the graph that depend on ref will get the old value. To get the new value, use the one 
+    returned by the assign node. The reason for that is to make ``assign`` have a deterministic behavior.
+
+    If not computing gradients, the ref will be assigned the new value after the forward pass over the 
+    entire Function graph is complete; i.e. all uses of ref in the forward pass will use the original 
+    (pre-assignment) value of ref.
+
+    If computing gradients (training mode), the assignment to ref will happen after completing both 
+    the forward and backward passes over the entire Function graph.
+
+    The ref must be a Parameter or Constant. If the same ref is used in multiple assign operations, 
+    then the order in which the assignment happens is non-deterministic and the final value can be 
+    either of the assignments unless an order is established using a data dependence between the 
+    assignments.
+
+    Example:
+        >>> dest = C.constant(shape=(3,4))
+        >>> data = C.parameter(shape=(3,4), init=2)
+        >>> C.assign(dest,data).eval()
+        array([[ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.]], dtype=float32)
+        >>> dest.asarray()
+        array([[ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.]], dtype=float32)
+
+        >>> dest = C.parameter(shape=(3,4), init=0)
+        >>> a = C.assign(dest, data)
+        >>> y = dest + data
+        >>> result = C.combine([y, a]).eval()
+        >>> result[y.output]
+        array([[ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.]], dtype=float32)
+        >>> dest.asarray()
+        array([[ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.]], dtype=float32)
+        >>> result = C.combine([y, a]).eval()
+        >>> result[y.output]
+        array([[ 4.,  4.,  4.,  4.],
+               [ 4.,  4.,  4.,  4.],
+               [ 4.,  4.,  4.,  4.]], dtype=float32)
+        >>> dest.asarray()
+        array([[ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.],
+               [ 2.,  2.,  2.,  2.]], dtype=float32)
+
+    Args:
+        ref: class: `~cntk.variables.Constant` or `~cntk.variables.Parameter`.
+        input: class:`~cntk.ops.functions.Function` that outputs a tensor
+        name (str, optional): the name of the Function instance in the network
+    Returns:
+        :class:`~cntk.ops.functions.Function`
+    '''
+    from cntk.cntk_py import assign
+    dtype = get_data_type(input)
+    operand = sanitize_input(input, dtype)
+    ref_operand = sanitize_input(ref, dtype)
+    return assign(ref_operand, operand, name)
